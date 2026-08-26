@@ -1,0 +1,67 @@
+[project]
+name = "assay"
+version = "0.1.0"
+description = "Evaluate AI coding tools against an evaluation suite mined from a repository's own git history."
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2"]
+
+[project.scripts]
+# The module lands in M0/WP7; declared now so the console-script contract is fixed
+# before anything depends on it. `uv run assay` fails until then, by design.
+assay = "assay.cli.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/assay"]
+
+[dependency-groups]
+dev = ["mypy>=1.11", "pytest>=8", "ruff>=0.6"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "A",    # builtin shadowing
+    "ANN",  # missing annotations (mypy --strict's lint-side twin)
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # import sorting
+    "N",    # pep8 naming
+    "PT",   # pytest style
+    "PTH",  # use pathlib
+    "RET",  # return simplification
+    "RUF",
+    "SIM",
+    "TID",  # tidy imports (no relative parents)
+    "UP",   # pyupgrade
+    "W",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# N818 wants an "Error" suffix. NotImplementedInMilestone is user-facing vocabulary
+# ("assay run is not implemented in M0"), and its name is fixed by the CLI contract.
+"src/assay/core/errors.py" = ["N818"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# Load-bearing: a stale `# type: ignore` must fail CI, because the static-negative
+# tests assert that rejected code is genuinely rejected.
+warn_unused_ignores = true
+mypy_path = ["src"]
+explicit_package_bases = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "task_id": "fixture-repo.0001",
+  "repo_url": "https://example.invalid/fixture-repo.git",
+  "base_commit": "0123456789abcdef0123456789abcdef01234567",
+  "test_files": ["tests/test_parser.py"],
+  "test_patch": "--- a/tests/test_parser.py\n+++ b/tests/test_parser.py\n@@ -1,3 +1,7 @@\n from fixture_repo import parser\n \n \n+def test_parses_an_empty_document():\n+    assert parser.parse(\"\") == []\n+\n+\n def test_parses_one_entry():\n     assert parser.parse(\"a=1\") == [(\"a\", \"1\")]\n",
+  "ground_truth_patch": "--- a/src/fixture_repo/parser.py\n+++ b/src/fixture_repo/parser.py\n@@ -1,4 +1,6 @@\n def parse(text):\n+    if not text:\n+        return []\n     return [tuple(line.split(\"=\", 1)) for line in text.splitlines()]\n",
+  "fail_to_pass": ["tests/test_parser.py::test_parses_an_empty_document"],
+  "pass_to_pass": ["tests/test_parser.py::test_parses_one_entry"],
+  "prompt": "tests/test_parser.py::test_parses_an_empty_document fails at this commit. Change the source so it passes, without editing any test file.",
+  "metadata": {"mined_from_commit": "0123456789abcdef0123456789abcdef01234568", "language": "python"}
+}
