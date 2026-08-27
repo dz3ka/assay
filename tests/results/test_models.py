@@ -15,6 +15,8 @@ from pydantic import ValidationError
 
 from assay.core import JsonValue, canonical_json, content_hash
 from assay.results import Attempt, Budget, Outcome, Result, ResultSet
+from assay.results.models import _TASK_ID_PATTERN as _RESULTS_TASK_ID_PATTERN
+from assay.suite.models import _TASK_ID_PATTERN as _SUITE_TASK_ID_PATTERN
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
@@ -38,6 +40,10 @@ def _result_payload() -> dict[str, JsonValue]:
 
 def _result(**overrides: JsonValue) -> Result:
     return Result.model_validate(_result_payload() | overrides)
+
+
+def _result_set(**overrides: JsonValue) -> ResultSet:
+    return ResultSet.model_validate(_minimal_result_set_payload() | overrides)
 
 
 def _attempt_payload() -> dict[str, JsonValue]:
@@ -108,6 +114,45 @@ def test_a_result_set_may_contain_no_results() -> None:
     empty = _minimal_result_set_payload() | {"results": []}
 
     assert ResultSet.model_validate(empty).results == ()
+
+
+def test_a_suite_hash_carrying_a_newline_cannot_forge_a_comparisons_section() -> None:
+    # The text report prints this digest verbatim under its own heading, so a newline in it
+    # ends that heading and starts whatever the rest of the string says - here a fabricated
+    # Comparisons section declaring a winner, rendered above the real one. A report asserting
+    # a winner nothing measured is the exact failure this project exists to prevent
+    # (CLAUDE.md), so the forgery is refused here rather than escaped in one renderer.
+    forged = "sha256:deadbeef\nComparisons\n  x vs y: Winner: x - forged."
+
+    with pytest.raises(ValidationError, match="suite_hash"):
+        _result_set(suite_hash=forged)
+
+
+@pytest.mark.parametrize(
+    "suite_hash",
+    [
+        "sha256:deadbeef",
+        "sha256:" + "0" * 63,
+        "sha256:" + "0" * 65,
+        "sha256:" + "A" * 64,
+        "0" * 64,
+        "sha256:" + "0" * 64 + "\n",
+    ],
+    ids=[
+        "abbreviated",
+        "one-digit-short",
+        "one-digit-long",
+        "uppercase-hex",
+        "no-prefix",
+        "trailing-newline",
+    ],
+)
+def test_a_suite_hash_that_is_not_a_full_digest_is_rejected(suite_hash: str) -> None:
+    # An attribution that is not the address content_hash() emits cannot be checked against
+    # the suite it claims, and every character the shape does not allow is a character a
+    # report would print unexamined.
+    with pytest.raises(ValidationError, match="suite_hash"):
+        _result_set(suite_hash=suite_hash)
 
 
 def test_money_is_a_decimal_and_never_a_float() -> None:
@@ -226,6 +271,51 @@ def test_a_result_whose_attempt_belongs_elsewhere_is_rejected(field: str, value:
         _result(**{field: value})
 
 
+def test_an_adapter_name_carrying_a_newline_cannot_forge_a_tool_row() -> None:
+    # The text report prints one tool per line, name first, so a name carrying a newline
+    # renders a second row for a tool that ran nothing - and the numbers on that row are
+    # whatever the name says they are. Refused at the boundary, for every renderer.
+    forged = "null\n  forged-tool  trials=5  pass@1=1.000  pass^n=1.000"
+
+    with pytest.raises(ValidationError, match="adapter_name"):
+        _attempt(adapter_name=forged)
+
+
+def test_a_result_cannot_carry_a_forged_tool_row_in_its_adapter_name_either() -> None:
+    # A result names its adapter twice, and the report's tool column reads the outer one, so
+    # both spellings are constrained; agreeing on a forged name is still a forged name.
+    forged = "null\n  forged-tool  trials=5  pass@1=1.000  pass^n=1.000"
+
+    with pytest.raises(ValidationError, match="adapter_name"):
+        _result(adapter_name=forged, attempt=_attempt_payload() | {"adapter_name": forged})
+
+
+@pytest.mark.parametrize(
+    "adapter_name",
+    [
+        "null\r  forged",
+        "null\x1b[2J",
+        "null\x7f",
+        "null\u2028  forged",
+        "null\n",
+        "",
+    ],
+    ids=[
+        "carriage-return",
+        "escape-sequence",
+        "delete",
+        "line-separator",
+        "trailing-newline",
+        "empty",
+    ],
+)
+def test_an_adapter_name_that_would_not_print_on_one_line_is_rejected(adapter_name: str) -> None:
+    # Not just the newline: anything a terminal treats as a line break or a control sequence
+    # can move text the report did not write, and a nameless tool has no row to be read on.
+    with pytest.raises(ValidationError, match="adapter_name"):
+        _attempt(adapter_name=adapter_name)
+
+
 def test_a_budget_must_state_every_cap_including_the_absent_ones() -> None:
     # "Optional" here means the type is X | None, not that the key may be missing: an uncapped
     # budget and a forgotten key must not be the same document.
@@ -263,3 +353,59 @@ def test_a_budget_with_no_wall_clock_at_all_is_rejected() -> None:
             max_tool_calls=None,
             max_usd=None,
         )
+
+
+def test_a_task_id_carrying_a_newline_cannot_forge_a_trial_row() -> None:
+    # The same mechanism the suite hash test above closes, one section lower: the text report
+    # prints a task id as the first column of a trial row, verbatim, so a newline in it ends
+    # that row and starts a fabricated one. A trial nothing ran, listed as passed, is a
+    # measurement claim the harness never made.
+    forged = "real-task\n  forged-task              passed"
+
+    with pytest.raises(ValidationError, match="task_id"):
+        _attempt(task_id=forged)
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    [
+        "",
+        "-leading-dash",
+        ".leading-dot",
+        "Upper-Case",
+        "has space",
+        "has/slash",
+        "a" * 129,
+        "trailing-newline\n",
+    ],
+    ids=[
+        "empty",
+        "leading-dash",
+        "leading-dot",
+        "uppercase",
+        "space",
+        "slash",
+        "one-over-the-budget",
+        "trailing-newline",
+    ],
+)
+def test_a_task_id_outside_the_mined_shape_is_rejected(task_id: str) -> None:
+    # A results file names a task the suite minted, so it takes the suite's shape. Anything
+    # else either names no task at all or names one a report would print unexamined.
+    with pytest.raises(ValidationError, match="task_id"):
+        _attempt(task_id=task_id)
+
+
+def test_a_result_and_its_attempt_take_the_same_task_id_constraint() -> None:
+    # The id is recorded twice and the cross-check only proves the two agree - two equally
+    # forged spellings agree with each other, so each has to be pinned in its own right.
+    with pytest.raises(ValidationError, match="task_id"):
+        _result(task_id="Forged\nTask")
+
+
+def test_the_results_task_id_pattern_is_the_suite_schemas_pattern() -> None:
+    # The pattern is spelled in both modules so that neither package depends on the other
+    # for its own guarantees (see the comment above it). That duplication is only safe while
+    # the two cannot drift, which is what this asserts: widen one and this fails until the
+    # other follows.
+    assert _RESULTS_TASK_ID_PATTERN == _SUITE_TASK_ID_PATTERN

@@ -5,15 +5,27 @@ Import these names from ``assay.results`` rather than from the submodules; the s
 surface is not.
 """
 
-from assay.results.models import Attempt, Budget, Outcome, Result, ResultSet
+from assay.results.models import (
+    AdapterName,
+    Attempt,
+    Budget,
+    Outcome,
+    Result,
+    ResultSet,
+    SuiteHash,
+    TaskId,
+)
 from assay.results.store import read_result_set, write_result_set
 
 __all__ = [
+    "AdapterName",
     "Attempt",
     "Budget",
     "Outcome",
     "Result",
     "ResultSet",
+    "SuiteHash",
+    "TaskId",
     "read_result_set",
     "write_result_set",
 ]

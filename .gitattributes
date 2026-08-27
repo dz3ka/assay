@@ -1,0 +1,9 @@
+# Line endings are repo policy, not per-host config. Everything is committed and
+# checked out LF on every OS, so the object database never depends on whether a
+# contributor's core.autocrlf happened to be true, input, or false.
+* text=auto eol=lf
+
+# Content-addressed JSON: LF is pinned explicitly rather than inherited, so the
+# rule survives someone later relaxing the wildcard above. text (not -text) keeps
+# these hand-written, pretty-printed fixtures reviewable as diffs in a PR.
+*.json text eol=lf

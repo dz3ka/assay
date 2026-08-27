@@ -25,7 +25,7 @@ from typing import Annotated, NewType, Self
 from pydantic import Field, model_validator
 
 from assay.core import SchemaModel
-from assay.results import Outcome, ResultSet
+from assay.results import AdapterName, Outcome, ResultSet, SuiteHash
 
 # A string that has been through the redaction boundary (SPEC §5.4). The type is declared
 # here, next to the fields that hold one, so that :mod:`assay.report.redact` depends on the
@@ -38,8 +38,12 @@ Redacted = NewType("Redacted", str)
 # around them. Anything outside [0, 1] is an arithmetic bug upstream, not a measurement.
 type Proportion = Annotated[float, Field(ge=0.0, le=1.0)]
 
-# ``assay.results`` does not export its ``Count`` alias, so the non-negative count below is
-# spelled inline rather than reaching into ``assay.results.models`` past its public surface.
+# A report is built from a result set and prints what that set recorded, so the two string
+# constraints it carries over - ``AdapterName`` and ``SuiteHash`` - are imported
+# from ``assay.results`` rather than restated, and a report constructed directly (as several
+# report tests do) gets the same guarantee as one ``build_report`` produced. ``Count`` is not
+# on that public surface, so the count below is spelled inline rather than reaching into
+# ``assay.results.models`` past it.
 type TrialCount = Annotated[int, Field(ge=0)]
 
 
@@ -83,7 +87,7 @@ class ToolSummary(SchemaModel):
     without its interval is what this project refuses to publish.
     """
 
-    tool: str
+    tool: AdapterName
     # Trials behind the summary, so a reader can see how little (or much) it rests on.
     trials: TrialCount
     pass_at_1: Proportion
@@ -112,7 +116,7 @@ class Verdict(SchemaModel):
     """
 
     # The winning tool's name, or null when the evidence does not separate the two.
-    winner: str | None
+    winner: AdapterName | None
     reason: VerdictReason
 
     @model_validator(mode="after")
@@ -158,8 +162,8 @@ class Comparison(SchemaModel):
     the report once, and a second copy could disagree with the first.
     """
 
-    tool_a: str
-    tool_b: str
+    tool_a: AdapterName
+    tool_b: AdapterName
     verdict: Verdict
 
 
@@ -174,6 +178,11 @@ class TaskLine(SchemaModel):
     in a convention some later renderer has to remember.
     """
 
+    # NOT pinned to TaskId, unlike the results schema's spelling of the same field. A report
+    # line's id is repo-derived text that the redaction boundary covers, and the renderer
+    # tests exercise it with values the mined-task shape rejects. Whether a report may name a
+    # task the suite never minted is a schema question M1 answers; until it does, pinning
+    # here would decide it by accident. See the open question in the M0 handoff.
     task_id: str
     repo_path: Redacted | None
     commit_subject: Redacted | None
@@ -191,7 +200,7 @@ class Report(SchemaModel):
     is :data:`STUB_INTERVAL_NOTICE`, printed by the renderers.
     """
 
-    suite_hash: str
+    suite_hash: SuiteHash
     # True while every interval is the M0 placeholder band rather than a measurement. A
     # boolean, not a sentence: the wording lives in STUB_INTERVAL_NOTICE outside the schema,
     # so it can be reworded without breaking a consumer (see this module's docstring). No

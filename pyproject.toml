@@ -2,12 +2,13 @@
 name = "assay"
 version = "0.1.0"
 description = "Evaluate AI coding tools against an evaluation suite mined from a repository's own git history."
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = ["pydantic>=2"]
 
 [project.scripts]
-# The module lands in M0/WP7; declared now so the console-script contract is fixed
-# before anything depends on it. `uv run assay` fails until then, by design.
+# `uv run assay` resolves to `main`, which returns the process exit code. Three of the
+# four commands exit 3 (not implemented in this milestone); `report` is the built one.
 assay = "assay.cli.main:main"
 
 [build-system]

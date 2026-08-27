@@ -171,10 +171,12 @@ def run_report(results: Path, fmt: str) -> int:
     """
     try:
         report, document = _report_document(results, fmt)
-    except (AssayError, OSError, ValueError) as error:
+    except (AssayError, OSError, ValueError, RecursionError) as error:
         # ValueError covers both halves of "the file is not a result set": json's decode error
-        # and pydantic's ValidationError, which subclasses it. The path is repeated in our own
-        # words because not every one of these errors names it.
+        # and pydantic's ValidationError, which subclasses it. RecursionError is neither, but
+        # deeply nested JSON raises it out of the decoder, and unreadable input owes the caller
+        # one sentence and EXIT_FAILED whatever shape the refusal arrives in. The path is
+        # repeated in our own words because not every one of these errors names it.
         print(f"assay report: cannot read {results}: {error}", file=sys.stderr)
         return EXIT_FAILED
 

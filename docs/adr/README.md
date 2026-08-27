@@ -53,3 +53,5 @@ capability the code does not have is a defect, not a roadmap.
 | [0008](0008-pydantic-v2-over-canonical-json.md) | Data contracts are pydantic v2 models over canonical JSON, addressed with SHA-256 | Accepted · underpins 0007 |
 | [0009](0009-redaction-is-hmac-with-a-per-render-salt.md) | Redaction is HMAC-SHA-256 under a per-render salt that is never persisted | Accepted |
 | [0010](0010-money-is-a-decimal-at-six-decimal-places.md) | Money is a `Decimal` at exactly six decimal places, and any other scale is refused | Accepted · applies 0008 |
+| [0011](0011-string-constraints-live-on-the-schema.md) | String constraints live on the schema, not in the renderers | Accepted · widens 0005 |
+| [0012](0012-the-task-id-pattern-is-spelled-twice.md) | The mined-task-id pattern is spelled twice, and a drift test licenses it | Accepted · applies 0011 |
