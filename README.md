@@ -12,11 +12,17 @@ The point is not the score. The point is that the score is defensible: a task on
 suite if its tests provably fail before the fix and provably pass after it, and the report
 refuses to name a winner it cannot separate.
 
-**Status: M0.** The schemas, the adapter protocol, the two no-model adapters, the redaction
-boundary, the report pipeline and the decision record landed. `assay report` works end to
-end against a recorded result set. `mine`, `validate` and `run` are reachable, name the
-milestone that builds them, and exit `3`. Nothing has mined a real repository yet, and no
-interval printed today is a measured one.
+**Status: M1 complete.** M0's schemas, adapter protocol, redaction boundary, report pipeline and
+decision record landed, and `assay report` works end to end against a recorded result set.
+`assay mine` and `assay validate` now run the red→green gate over a real local clone: the walk,
+the test/source split, the proof that the tests fail at the parent and pass once the commit's own
+diff is applied, and the yield accounting for everything discarded on the way. `assay run` is the
+only command left that exits `3`. Mining has also been run by hand over a real repository:
+[743 commits of httpie](docs/milestones/m1-yield-httpie.md) examined for **0 valid tasks**, and
+that record explains why the zero is a fact about M1's provisioning rather than about httpie's
+history. Two things are true and worth reading twice: mining runs the
+target repository's build and test suite **on this machine, outside a sandbox** — the container is
+M2 — and no interval printed today is a measured one.
 
 ## What it does today
 
@@ -38,6 +44,24 @@ value, not the file's bytes, so a hand-written pretty-printed suite and the byte
 `GroundTruthAdapter` replays the known-good diff and should score perfectly; `NullAdapter`
 returns an empty diff and should score zero. A harness where those two do not land at the
 ends of the scale is measuring something other than what it claims.
+
+**Mining and the red→green gate.** `assay mine --repo <clone> --out suite.json` walks
+single-parent commits newest-first, splits each into the tests it changed and the source it
+changed, checks the parent out into a throwaway worktree, and admits the commit as a task only if
+the tests fail there and pass once the commit's own diff is applied — twice, so a flaky green is
+caught rather than minted. What is discarded is counted under one of seven reasons, and the run
+prints yield rather than a task count. Against the fixture repository the test suite builds for
+itself, that reads `9 single-parent commits examined -> 2 valid tasks` and
+`6 candidates reached the gate, 0 unprovisioned`. `assay validate` re-runs the same gate over a
+suite that already exists and refuses it unless both recorded test sets are reproduced exactly
+([ADR-0014](docs/adr/0014-revalidation-compares-recorded-sets-both-ways.md)).
+
+The scope is narrow on purpose: one repository family (Python with pytest), commits whose fix is
+anchored by tests that shipped with it, and — the part to read before pointing it anywhere —
+mining a repository runs that repository's build and tests on your machine, as you, outside a
+sandbox. `assay mine` says so on stderr before it runs anything, and
+[ADR-0013](docs/adr/0013-mining-runs-on-the-host-in-m1.md) records what that costs and what M2's
+container closes.
 
 **The report pipeline.** Three renderers — text, JSON, and a single self-contained HTML file
 with no external assets and no CDN. The refusal to declare a winner when confidence
@@ -67,12 +91,13 @@ fresh per render and never persisted
   this tool run here* — DNS, egress, proxies, TLS interception. Assay answers *is it any
   good here*. Portcall goes ahead of the deployment; Assay comes after it. They share no
   code.
-- **Mining, validation, running and scoring are not built.** At M0, `assay mine`, `assay
-  validate` and `assay run` exit `3` with a message naming the milestone that builds them.
-  There is no sandbox, no model call, no git traversal and no statistics yet. The intervals
-  `assay report` prints are placeholders — pass^n ±0.25, clamped — and all three renderers
-  say so verbatim, above the fold, on every run. Real Wilson intervals land in M4, and
-  deleting the stub is a follow-up pinned in ADR-0005.
+- **Running, scoring and the sandbox are not built.** `assay run` exits `3` with a message
+  naming the milestone that builds it, and there is no sandbox, no model call and no statistics
+  yet — so nothing has yet been scored against a mined task. Mining and validation are built and
+  narrow: one repository family, test-anchored commits, and execution on the host rather than in
+  a container. The intervals `assay report` prints are placeholders — pass^n ±0.25, clamped —
+  and all three renderers say so verbatim, above the fold, on every run. Real Wilson intervals
+  land in M4, and deleting the stub is a follow-up pinned in ADR-0005.
 
 ## Trust properties
 
@@ -81,7 +106,7 @@ aspirational. The first five are enforced in code today. The sixth names the con
 later milestones are being built against, and is listed as a constraint, not a capability.
 
 1. **The repository under evaluation never leaves the machine.** No upload, no telemetry.
-2. **Reports are redacted by default**, and at M0 there is no opt-out flag at all. The salt
+2. **Reports are redacted by default**, and there is still no opt-out flag at all. The salt
    is drawn per render, so two reports on the same suite share no token.
 3. **Ranking reads executable signal only** — tests passing, no regression, build clean. LLM
    judges inform the report and never move the ranking
@@ -93,7 +118,10 @@ later milestones are being built against, and is listed as a constraint, not a c
 6. **Model-generated code will only ever run inside the sandbox**, and **networking is off
    inside a trial** except for an allowlisted model endpoint, with dependencies baked into
    the task image rather than installed mid-trial. Both are M2
-   ([ADR-0006](docs/adr/0006-network-off-inside-a-trial.md)).
+   ([ADR-0006](docs/adr/0006-network-off-inside-a-trial.md)). Mining is not a trial and runs no
+   model-generated code, but until that container exists it does run the *target repository's*
+   own build and tests on the host, which is a different exposure and an accepted one
+   ([ADR-0013](docs/adr/0013-mining-runs-on-the-host-in-m1.md)).
 
 ## Run
 
@@ -132,9 +160,9 @@ the admission. That fixture is the overlapping case, so its comparison reads:
 | Code | Meaning |
 |------|---------|
 | `0` | The command ran. |
-| `1` | Assay refused: unreadable input, a schema version it does not support. (A suite hash mismatch also refuses this way, but only `validate`/`run` load a suite, so M0 cannot reach it.) |
+| `1` | Assay refused: unreadable input, a schema version it does not support, a suite whose hash does not match its body, or a suite that no longer revalidates. |
 | `2` | Bad invocation — argparse rejected the command line. |
-| `3` | The command exists in the surface but is not implemented in this milestone. |
+| `3` | The command exists in the surface but is not implemented in this milestone. Only `assay run` reaches it now. |
 
 `3` is its own code so a caller can tell "this milestone has not built that yet" from "that
 went wrong", and neither of them reads as success.
@@ -143,8 +171,10 @@ went wrong", and neither of them reads as success.
 
 Every non-obvious decision has an ADR in [docs/adr/](docs/adr/) — the context, the choice,
 the alternatives that lost, and the consequences. ADRs 0001–0007 are the seven decisions
-`SPEC.md` §8 names; 0008–0010 are decisions M0's implementation forced that the spec did not
-anticipate.
+`SPEC.md` §8 names; 0008–0012 are decisions M0's implementation forced that the spec did not
+anticipate, and 0013–0019 are M1's — the host-execution posture, two rules about what an
+accounting number is allowed to claim, and four the by-hand httpie run forced about timeouts,
+provisioning, and what mining on the host cannot reach.
 
 Start with [ADR-0002](docs/adr/0002-tasks-are-mined-not-authored.md) for why the tasks come
 out of git history rather than out of someone's judgement about what a good test case looks

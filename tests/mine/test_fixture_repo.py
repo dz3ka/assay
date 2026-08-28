@@ -8,12 +8,11 @@ differed between them would build a different history on each, and every downstr
 would quietly become a statement about a different repository. This test is the canary for
 that, and it is meant to fail on the first Linux run rather than to be relaxed.
 
-The rest of the file pins what can be checked without running a test suite: that the eight
+The rest of the file pins what can be checked without running a test suite: that the seven
 ``GateRejection`` reasons all have a commit in the history, that the walk yields the nine
-commits :data:`EXPECTED_YIELD` counts, and that the four reasons decided on the diff alone -
-merge, no test changes, no source changes, patch did not apply - really are reached. The four
-that need pytest belong to the end-to-end mining test, which runs the suite this history
-carries.
+commits :data:`EXPECTED_YIELD` counts, and that the three reasons decided on the diff alone -
+no test changes, no source changes, patch did not apply - really are reached. The four that
+need pytest belong to the end-to-end mining test, which runs the suite this history carries.
 """
 
 from pathlib import Path
@@ -61,7 +60,14 @@ def test_the_history_builds_to_the_pinned_object_names(tmp_path: Path) -> None:
 def test_every_rejection_reason_has_a_commit_that_reaches_it() -> None:
     # The binding rule behind the fixture: a reason with no commit behind it is speculative,
     # and a speculative reason is a hole in the yield accounting the whole project rests on.
-    covered = {commit.rejection for commit in FIXTURE_COMMITS if commit.rejection is not None}
+    # "Reaches it" means a commit the walk actually *yields*: a reason witnessed only by a
+    # commit git never hands over is not reachable at all, which is how `merge_commit` stayed
+    # in the enum until ADR-0015 cut it. Hence the `walked` filter.
+    covered = {
+        commit.rejection
+        for commit in FIXTURE_COMMITS
+        if commit.walked and commit.rejection is not None
+    }
 
     assert covered == set(GateRejection)
 
@@ -73,8 +79,10 @@ def test_the_expected_yield_is_the_arithmetic_of_the_commit_table() -> None:
     assert EXPECTED_YIELD.candidates == 6
     assert EXPECTED_YIELD.accepted == 2
     assert EXPECTED_YIELD.accepted + sum(EXPECTED_YIELD.rejected.values()) == 9
-    # Unreachable under M1's `--no-merges` walk, and recorded as such rather than papered over.
-    assert EXPECTED_YIELD.rejected[GateRejection.MERGE_COMMIT] == 0
+    # Every reason is reported, zeros included, so a yield is a full partition rather than a
+    # sparse mapping whose missing keys a reader has to guess the meaning of.
+    assert set(EXPECTED_YIELD.rejected) == set(GateRejection)
+    assert len(EXPECTED_YIELD.rejected) == 7
 
 
 def test_the_walk_yields_the_nine_commits_the_yield_counts(tmp_path: Path) -> None:
@@ -90,15 +98,17 @@ def test_the_walk_yields_the_nine_commits_the_yield_counts(tmp_path: Path) -> No
     ]
 
 
-def test_the_merge_commit_is_in_the_history_but_never_walked(tmp_path: Path) -> None:
-    # A merge is the one rejection reason M1's walk cannot produce, because git drops it
-    # before Assay sees it. The commit is in the fixture so the claim has a witness.
+def test_the_merge_commit_is_in_the_history_but_is_never_examined(tmp_path: Path) -> None:
+    # A merge is not a rejection reason, it is a commit outside the accounting: git drops it
+    # before Assay sees it, so it is never examined and never counted (ADR-0015). The commit
+    # is in the fixture so the claim has a witness.
     history = _history(tmp_path)
     merge = _by_label("merge_tidy")
 
     walked = {commit.sha for commit in history.commits(limit=None)}
 
-    assert merge.rejection is GateRejection.MERGE_COMMIT
+    assert merge.walked is False
+    assert merge.rejection is None
     assert merge.sha not in walked
 
 

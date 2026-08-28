@@ -14,6 +14,8 @@ precedent for spelling a convention twice rather than sharing it across a layer)
 """
 
 import dataclasses
+from types import MappingProxyType
+from typing import Final
 
 import pytest
 from pydantic import ValidationError
@@ -27,23 +29,38 @@ from assay.mine import ChangeSplit, CommitRef, GateOutcome, GateRejection, Minin
 from assay.mine import TestReport as Report
 from assay.mine import TestStatus as Status
 
+# A yield that partitions: 213 accepted + 1447 rejected before the gate + 187 rejected by it
+# = 1847 examined, and 213 + 187 = 400 candidates. Spelled out rather than computed, so a test
+# that breaks the arithmetic breaks it visibly.
+_REJECTED: Final = MappingProxyType(
+    {
+        GateRejection.NO_TEST_CHANGES: 1200,
+        GateRejection.NO_SOURCE_CHANGES: 200,
+        GateRejection.PATCH_DID_NOT_APPLY: 47,
+        GateRejection.ALREADY_GREEN: 100,
+        GateRejection.STILL_RED: 87,
+        GateRejection.UNSTABLE_GREEN: 0,
+        GateRejection.RUN_TIMED_OUT: 0,
+    }
+)
+
 
 def _yield(**overrides: object) -> MiningYield:
     fields: dict[str, object] = {
         "commits_examined": 1847,
         "candidates": 400,
         "accepted": 213,
-        "rejected": {GateRejection.ALREADY_GREEN: 100, GateRejection.STILL_RED: 87},
+        "rejected": dict(_REJECTED),
     }
     fields.update(overrides)
     return MiningYield.model_validate(fields)
 
 
-def test_the_gate_has_exactly_the_eight_rejection_reasons() -> None:
-    # The set is closed: yield accounting is a partition of the candidates examined, so a
-    # ninth reason added without a place in the accounting would silently lose commits.
+def test_the_gate_has_exactly_the_seven_rejection_reasons() -> None:
+    # The set is closed: yield accounting is a partition of the commits examined, so an
+    # eighth reason added without a place in the accounting would silently lose commits -
+    # and a reason the walk can never reach (ADR-0015) would silently overstate coverage.
     assert {member.value for member in GateRejection} == {
-        "merge_commit",
         "no_test_changes",
         "no_source_changes",
         "patch_did_not_apply",
@@ -113,23 +130,94 @@ def test_a_mining_yield_refuses_a_field_it_does_not_know() -> None:
         _yield(yield_rate="0.115")
 
 
+def _counts(**counts: int) -> dict[GateRejection, int]:
+    """A dense per-reason mapping, zero everywhere the caller did not name a count."""
+    return {reason: counts.get(reason.name.lower(), 0) for reason in GateRejection}
+
+
 @pytest.mark.parametrize(
-    ("commits_examined", "candidates", "accepted"),
-    [(10, 11, 0), (10, 5, 6), (0, 0, 1)],
+    ("commits_examined", "candidates", "accepted", "rejected"),
+    [
+        (10, 11, 0, _counts(no_test_changes=10)),
+        (10, 5, 6, _counts(still_red=4)),
+        (0, 0, 1, _counts()),
+    ],
     ids=["more-candidates-than-commits", "more-accepted-than-candidates", "accepted-from-nothing"],
 )
 def test_a_mining_yield_refuses_a_count_bigger_than_the_one_it_came_from(
-    commits_examined: int, candidates: int, accepted: int
+    commits_examined: int, candidates: int, accepted: int, rejected: dict[GateRejection, int]
 ) -> None:
     # A yield line whose numerator exceeds its denominator is the one arithmetic that would
-    # overstate the result, and overstating is fatal for a project about measurement.
+    # overstate the result, and overstating is fatal for a project about measurement. Each case
+    # keeps the rest of the arithmetic sound, so the refusal is the overstatement it names.
     with pytest.raises(ValidationError):
-        _yield(commits_examined=commits_examined, candidates=candidates, accepted=accepted)
+        _yield(
+            commits_examined=commits_examined,
+            candidates=candidates,
+            accepted=accepted,
+            rejected=rejected,
+        )
 
 
 def test_a_mining_yield_refuses_a_negative_count() -> None:
     with pytest.raises(ValidationError, match="accepted"):
-        _yield(commits_examined=0, candidates=0, accepted=-1)
+        _yield(commits_examined=0, candidates=0, accepted=-1, rejected=_counts())
+
+
+def test_a_mining_yield_refuses_counts_that_do_not_partition_what_was_examined() -> None:
+    # Nine commits cannot hold nine of every reason and six acceptances as well. Only the two
+    # nesting inequalities used to be checked, so this document was accepted - and it overstates
+    # both numerators at once.
+    with pytest.raises(ValidationError, match="partition commits examined"):
+        _yield(
+            commits_examined=9,
+            candidates=6,
+            accepted=6,
+            rejected=dict.fromkeys(GateRejection, 9),
+        )
+
+
+def test_a_mining_yield_refuses_a_rejected_mapping_that_omits_a_reason() -> None:
+    # A reason missing and a reason that fired zero times must not be the same document
+    # (ADR-0015). The rule was enforced only where the miner counted; a yield read back from a
+    # file has to be refusable on the same terms (ADR-0011).
+    with pytest.raises(ValidationError, match="every reason"):
+        _yield(
+            commits_examined=9,
+            candidates=2,
+            accepted=2,
+            rejected={GateRejection.STILL_RED: 1},
+        )
+
+
+def test_a_mining_yield_refuses_a_negative_rejection_count() -> None:
+    # ``Field(ge=0)`` reaches the scalars only, and a negative count here is exactly what would
+    # balance both partition sums while overstating ``accepted``. It is why the two nesting
+    # inequalities could be dropped as implied and this clause could not.
+    with pytest.raises(ValidationError, match="negative"):
+        _yield(
+            commits_examined=9,
+            candidates=8,
+            accepted=8,
+            rejected=_counts(still_red=1, unstable_green=-1),
+        )
+
+
+def test_a_mining_yield_counts_a_commit_with_no_environment_outside_the_seven_reasons() -> None:
+    # A commit whose workspace could not be provisioned was examined, was never a candidate,
+    # and belongs under no rejection reason - the gate never spoke about it.
+    reported = _yield(
+        commits_examined=10, candidates=2, accepted=2, rejected=_counts(), unprovisioned=8
+    )
+
+    assert reported.unprovisioned == 8
+    assert reported.candidates == 2
+
+
+def test_a_mining_yield_written_without_the_unprovisioned_count_still_partitions() -> None:
+    # The field defaults to zero so a yield that predates it, and the fixture oracle that
+    # constructs one without it, still describe the same partition.
+    assert _yield().unprovisioned == 0
 
 
 @pytest.mark.parametrize(

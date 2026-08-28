@@ -55,3 +55,10 @@ capability the code does not have is a defect, not a roadmap.
 | [0010](0010-money-is-a-decimal-at-six-decimal-places.md) | Money is a `Decimal` at exactly six decimal places, and any other scale is refused | Accepted · applies 0008 |
 | [0011](0011-string-constraints-live-on-the-schema.md) | String constraints live on the schema, not in the renderers | Accepted · widens 0005 |
 | [0012](0012-the-task-id-pattern-is-spelled-twice.md) | The mined-task-id pattern is spelled twice, and a drift test licenses it | Accepted · applies 0011 |
+| [0013](0013-mining-runs-on-the-host-in-m1.md) | Mining runs the target repository on the host, and M1 accepts the exposure | Accepted |
+| [0014](0014-revalidation-compares-recorded-sets-both-ways.md) | Revalidation is strict in both directions, and the yield partition lives in the model | Accepted · applies 0011 |
+| [0015](0015-a-rejection-reason-must-be-reachable.md) | A rejection reason must be reachable by the walk; merges are excluded, not rejected | Accepted |
+| [0016](0016-a-below-floor-test-timeout-is-refused-not-floored.md) | A below-floor `--test-timeout-s` is refused at the argument surface, not floored silently | Accepted · applies 0007 |
+| [0017](0017-still-red-stays-merged-until-m2-pins-the-environment.md) | `still_red` conflates "the fix did not work" with "no test ran", and stays merged until M2 | Accepted · applies 0015 |
+| [0018](0018-provisioning-installs-the-runtime-set-and-pytest.md) | Provisioning installs the project's runtime set plus pytest, and no extras or groups | Accepted · applies 0013 |
+| [0019](0019-m1-cannot-mine-unpinned-test-dependencies.md) | M1's host-execution model cannot mine a repository whose test dependencies are unpinned | Accepted · extends 0013 |

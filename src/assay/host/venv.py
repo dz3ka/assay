@@ -50,9 +50,16 @@ _TEST_RUNNER_REQUIREMENT: Final = "pytest"
 class EnvironmentSetupError(AssayError):
     """The workspace could not be given an environment its tests could run in.
 
-    Not a countable rejection: a repository whose ``uv pip install`` fails is a repository
-    Assay cannot mine at all, which is a finding about the run rather than about the commit
-    that happened to be under the gate when it surfaced.
+    Not a countable *rejection*: nothing about the commit's own red->green behaviour has been
+    observed, so filing it under one of the seven ``GateRejection`` reasons would falsify the
+    yield line. It is not a reason to abandon the run either, which an earlier version of this
+    docstring claimed - provisioning happens once **per commit**, so a repository mined back
+    past the commit that introduced its packaging has commits that simply cannot be installed,
+    and a walk that died on the first of them would report no yield at all.
+
+    The caller that wires this into the miner catches it and hands ``None`` back through
+    :data:`assay.mine.protocols.RunnerFactory`; the commit is then counted as
+    ``MiningYield.unprovisioned``, examined but never a candidate.
     """
 
 

@@ -12,7 +12,7 @@ names exist - never whether the signatures agree - so conformance is proved stat
 ``mypy --strict``, at the point of assignment.
 """
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Protocol
@@ -31,6 +31,9 @@ class History(Protocol):
 
         An iterator rather than a sequence: a large repository's history is walked until
         enough tasks are accepted, and the walk should not have to finish first.
+
+        A record this walk does not yield is not *examined* either, so it sits outside the
+        yield accounting rather than inside it as a reason (ADR-0015).
         """
 
     def changed_paths(self, parent: str, commit: str) -> tuple[str, ...]:
@@ -65,3 +68,25 @@ class TestRunner(Protocol):
         raising: a candidate that cannot be measured in time is discarded and counted, and
         the miner keeps walking.
         """
+
+
+# A workspace's test runner, made once the workspace exists.
+#
+# The third seam, and the one M1's plan did not foresee. A ``TestRunner`` is bound to the
+# environment its workspace was provisioned with (``assay.host.provision_venv`` installs the
+# mined repository into a ``.venv`` *inside* the worktree), and the worktree does not exist
+# until the gate makes it - so a caller cannot hand the gate a runner, only the means to make
+# one. Everything host-shaped therefore stays in the callable the CLI closes over, and this
+# package still never learns that uv or pytest exist.
+#
+# ``None`` means "this workspace could not be given an environment its tests could run in".
+# Provisioning is per commit - a repository mined back past the commit that introduced its
+# ``pyproject.toml`` has commits that simply cannot be installed - so a setup failure is a
+# property of the commit and must not end the walk. It is the *host-side* closure that catches
+# ``assay.host.EnvironmentSetupError`` and returns ``None`` here, which is what keeps
+# ``assay.mine`` from importing ``assay.host``.
+#
+# Deliberately the same shape as ``History.apply_patch``'s False above: an ordinary, countable
+# outcome rather than an exception. It is counted as ``MiningYield.unprovisioned`` - outside
+# the seven rejection reasons, because the gate never spoke about it.
+type RunnerFactory = Callable[[Path], TestRunner | None]

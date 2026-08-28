@@ -80,16 +80,24 @@ class TestStatus(StrEnum):
 class GateRejection(StrEnum):
     """Why a candidate commit did not become a task.
 
-    The set is closed at eight and every discard is counted under one of them, because yield
-    accounting is a partition of what was examined: a ninth reason introduced without a place
-    in the accounting would quietly lose commits from the denominator, and the denominator is
-    the honest half of the result (CLAUDE.md, "report yield, not just totals").
+    The set is closed at seven and every discard is counted under one of them, because yield
+    accounting is a partition of what was examined: an eighth reason introduced without a
+    place in the accounting would quietly lose commits from the denominator, and the
+    denominator is the honest half of the result (CLAUDE.md, "report yield, not just totals").
 
-    The first four are decided before anything runs - by :mod:`assay.mine.gate`'s caller, on
+    "Examined" means the walk's output, not the commit range. :meth:`History.commits` yields
+    single-parent commits only - ``GitHistory.commits`` asks git for ``--no-merges``, and a
+    record that arrives without exactly one parent is dropped - so a merge and the root commit
+    are never examined at all. They sit **outside** the accounting rather than inside it as a
+    reason, which is why there is deliberately no ``merge_commit`` member: nothing could ever
+    be counted under it, and a permanent ``merge_commit: 0`` in every reported yield reads as
+    "merges were examined and none was rejected" when the truth is that none was looked at.
+    Naming the population is the honest fix; widening the reason set is not (ADR-0015).
+
+    The first three are decided before anything runs - by :mod:`assay.mine.gate`'s caller, on
     the commit and its diff. The last four are the verdicts of the red->green gate itself.
     """
 
-    MERGE_COMMIT = "merge_commit"
     NO_TEST_CHANGES = "no_test_changes"
     NO_SOURCE_CHANGES = "no_source_changes"
     PATCH_DID_NOT_APPLY = "patch_did_not_apply"
@@ -97,6 +105,30 @@ class GateRejection(StrEnum):
     STILL_RED = "still_red"
     UNSTABLE_GREEN = "unstable_green"
     RUN_TIMED_OUT = "run_timed_out"
+
+
+# The rejections settled before :func:`assay.mine.decide_gate` is ever reached - on the
+# commit's own diff, or on a patch that would not apply. A commit rejected for one of these is
+# examined but is not a candidate, which is the difference between the two denominators a
+# yield reports.
+#
+# It lives in this module because :class:`MiningYield`'s validator is what needs it and
+# ``models`` cannot import ``pipeline`` - that is import direction, not deduplication.
+# ``tests/fixture_repo.py`` keeps its own independent second spelling of the same split on
+# purpose (ADR-0012): an oracle that imports its answer from the code under test proves
+# nothing, so that copy stays where it is.
+PRE_GATE_REJECTIONS: Final[frozenset[GateRejection]] = frozenset(
+    {
+        GateRejection.NO_TEST_CHANGES,
+        GateRejection.NO_SOURCE_CHANGES,
+        GateRejection.PATCH_DID_NOT_APPLY,
+    }
+)
+
+# The gate's own verdicts: the complement, never a second hand-written set. Two hand-written
+# frozensets over one enum can drift into something that is not a partition, and a member
+# added to :class:`GateRejection` later lands on exactly one side of this one by construction.
+GATE_VERDICTS: Final[frozenset[GateRejection]] = frozenset(GateRejection) - PRE_GATE_REJECTIONS
 
 
 @dataclass(frozen=True)
@@ -134,7 +166,8 @@ class CommitRef:
     """One commit worth examining, and the parent the task would be checked out at.
 
     Single-parent by construction: the walk asks git for ``--no-merges``, so ``parent`` is a
-    sha rather than a list, and a merge commit never reaches the gate as a candidate.
+    sha rather than a list. A merge is not yielded by the walk at all, so it is never
+    examined, never a candidate, and never counted as a rejection (ADR-0015).
     """
 
     sha: str
@@ -162,25 +195,72 @@ class MiningYield(SchemaModel):
     numerator in one value rather than being reassembled by whoever prints it.
     """
 
+    # The denominator is the **single-parent commits** the walk yielded, not every commit
+    # in the range: a merge and the root are outside this accounting entirely (ADR-0015). The
+    # rendered yield line says so in words, because a bare "commits examined" would be read as
+    # the whole history.
     commits_examined: int = Field(ge=0)
     candidates: int = Field(ge=0)
     accepted: int = Field(ge=0)
     # Counts per reason, ints only: a float has no stable canonical encoding (ADR-0008), so
     # any rate a reader wants is computed at the renderer, from these.
     rejected: Mapping[GateRejection, int]
+    # Commits the walk yielded whose workspace could not be given an environment its tests
+    # could run in (:data:`assay.mine.protocols.RunnerFactory` returned ``None``). They are
+    # examined - the walk did yield them - and they are not candidates, because the gate never
+    # spoke about them. Counted here, outside the seven reasons, for the reason ADR-0015 gives
+    # for merges: name the population, do not widen the reason set.
+    #
+    # Rejected alternative: an eighth ``GateRejection.ENVIRONMENT_FAILED``. A rejection reason
+    # has to have a walked fixture witness (``tests/mine/test_fixture_repo.py`` asserts every
+    # member is reached by a real commit), and no stub runner factory can honestly fabricate a
+    # witness for a real ``uv pip install`` failure - the only true witness would put a
+    # network-dependent install into CI.
+    #
+    # Defaulted to zero so the fixture oracle, which constructs a yield without this field,
+    # still describes the same partition - and so that a yield serialised before the field
+    # existed would too, once anything in the pipeline parses one back.
+    unprovisioned: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
-    def _check_counts_nest(self) -> Self:
-        """Refuse a yield line whose numerator exceeds the denominator it came from.
+    def _check_partition(self) -> Self:
+        """Refuse a yield that is not the partition of examined commits it claims to be.
 
-        Every accepted task was a candidate and every candidate was an examined commit, so
-        this is arithmetic rather than policy - and it is the one arithmetic that would
-        overstate the result, which is the direction this project cannot afford to be wrong in.
+        Four clauses, because the counting contract is four claims. Every reason is present,
+        zeros included, so "never fired" and "not looked for" cannot be the same document
+        (ADR-0015). No count is negative. Every examined commit is accepted, rejected for one
+        reason, or unprovisioned - exactly one. And every candidate is a commit the gate spoke
+        about: accepted, or rejected for one of :data:`GATE_VERDICTS`.
+
+        This lives here rather than only in :func:`assay.mine.tally_yield` because a yield is
+        meant to be read back from a file and not only produced - no M1 path parses one yet - and
+        a rule that only the producer enforces is the "escape once in a shared helper every
+        renderer calls" that ADR-0011 rejected.
+
+        The two nesting inequalities this replaced (``candidates <= commits_examined``,
+        ``accepted <= candidates``) are dropped as implied by clauses 3 and 4 - **but only
+        because clause 2 is here**, and in that order. ``Field(ge=0)`` constrains the scalars
+        and says nothing about ``rejected``'s values, so a negative count is exactly what would
+        balance both equalities while overstating ``accepted``.
         """
-        if self.candidates > self.commits_examined:
+        if set(self.rejected) != set(GateRejection):
+            missing = sorted(reason.value for reason in set(GateRejection) - set(self.rejected))
+            raise ValueError(f"rejected must name every reason; it is missing {missing}")
+        negative = sorted(reason.value for reason, count in self.rejected.items() if count < 0)
+        if negative:
+            raise ValueError(f"rejected holds a negative count for {negative}")
+
+        discarded = sum(self.rejected.values())
+        if self.accepted + discarded + self.unprovisioned != self.commits_examined:
             raise ValueError(
-                f"candidates ({self.candidates}) exceeds commits examined ({self.commits_examined})"
+                f"accepted ({self.accepted}) + rejected ({discarded}) + unprovisioned "
+                f"({self.unprovisioned}) does not partition commits examined "
+                f"({self.commits_examined})"
             )
-        if self.accepted > self.candidates:
-            raise ValueError(f"accepted ({self.accepted}) exceeds candidates ({self.candidates})")
+        judged = sum(self.rejected[reason] for reason in GATE_VERDICTS)
+        if self.accepted + judged != self.candidates:
+            raise ValueError(
+                f"accepted ({self.accepted}) + gate verdicts ({judged}) does not partition "
+                f"candidates ({self.candidates})"
+            )
         return self

@@ -39,9 +39,10 @@ REQUIRED_HEADINGS = (
     "## Consequences",
 )
 
-# SPEC section 8 names seven decisions; M0's implementation forced five more. Twelve is the
-# number a reviewer should find, so a missing or unnumbered thirteenth fails here.
-EXPECTED_NUMBERS = {f"{number:04d}" for number in range(1, 13)}
+# SPEC section 8 names seven decisions; M0's implementation forced five more and M1's forced
+# seven. Nineteen is the number a reviewer should find, so a missing or unnumbered twentieth
+# fails here.
+EXPECTED_NUMBERS = {f"{number:04d}" for number in range(1, 20)}
 
 # A markdown link target that names an ADR file: `[0005](0005-no-winner-....md)`.
 _ADR_LINK = re.compile(r"\]\((\d{4}-[a-z0-9-]+\.md)\)")
@@ -60,7 +61,7 @@ def indexed_filenames() -> set[str]:
     return set(_ADR_LINK.findall(table))
 
 
-def test_the_decision_record_is_exactly_adrs_0001_through_0012() -> None:
+def test_the_decision_record_is_exactly_adrs_0001_through_0019() -> None:
     assert {path.name[:4] for path in ADRS} == EXPECTED_NUMBERS
 
 

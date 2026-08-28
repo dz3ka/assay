@@ -103,7 +103,9 @@ class GitHistory:
         A mined task is a commit read against *the* state before it (ADR-0002), so a commit
         without exactly one parent is not a candidate. ``--no-merges`` drops the many-parent
         case; the root commit has no parent and is skipped here. Neither is a refusal - a
-        repository's first commit is not an anomaly, it is the end of the walk.
+        repository's first commit is not an anomaly, it is the end of the walk. A record this
+        walk does not yield is not *examined* either, so it sits outside the yield accounting
+        rather than inside it as a reason (ADR-0015).
 
         ``limit`` bounds what git prints, so a walk that reaches the root commit yields one
         fewer than it asked for. The walk is materialised before the first item, because

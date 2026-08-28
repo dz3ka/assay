@@ -42,11 +42,11 @@ The history, oldest first:
  8   flaky_jitter            adds a test that disagrees with itself      unstable_green
  9   slow_lookup             adds a test that cannot finish when red     run_timed_out
 10   deterministic_jitter    tidies a test, touching no source file      no_source_changes
-11   merge_tidy              merges commit 10 back into main             merge_commit
+11   merge_tidy              merges commit 10 back into main             not walked (merge)
 ===  ======================  ==========================================  ====================
 
 Commits 2-10 are what ``History.commits()`` yields, so ``commits_examined`` is **9**: the root
-has no parent, the merge has two, and neither is a candidate by construction. Six of the nine
+has no parent, the merge has two, and neither is examined. Six of the nine
 reach :func:`assay.mine.decide_gate` and **2** of those are accepted. :data:`EXPECTED_YIELD`
 is that arithmetic as a value and :data:`FIXTURE_COMMITS` is the table it is derived from -
 both importable, because M1's end-to-end mining test asserts against them rather than prose.
@@ -54,8 +54,8 @@ both importable, because M1's end-to-end mining test asserts against them rather
 Two properties of the history are deliberate and easy to undo by accident. Commit 6 repairs
 the test commit 5 leaves failing and commit 10 retires the flake commit 8 introduces, so the
 fixture's **HEAD is green, fast and deterministic** and an end-to-end test may run its whole
-suite. And every one of the eight ``GateRejection`` reasons has a commit that reaches it, so
-none of them is speculative - with the one caveat recorded in :data:`EXPECTED_YIELD`.
+suite. And every one of the seven ``GateRejection`` reasons has a *walked* commit that
+reaches it, so none of them is speculative.
 """
 
 import os
@@ -115,10 +115,10 @@ class FixtureCommit:
     is not ``commits_examined``.
 
     ``rejection`` is the verdict, and ``None`` means the gate accepts the commit as a task. It
-    is meaningful only where ``walked`` is true, with one documented exception: the merge
-    carries ``MERGE_COMMIT`` so that reason has a witness in the history. The root carries
-    ``None`` and ``walked=False``, which is *not* an acceptance - anything deriving counts from
-    this table filters on ``walked`` first, as :data:`EXPECTED_YIELD` does.
+    is meaningful only where ``walked`` is true. The root and the merge both carry ``None``
+    with ``walked=False``, which is *not* an acceptance: neither is examined, so neither has a
+    verdict at all (ADR-0015). Anything deriving counts from this table filters on ``walked``
+    first, as :data:`EXPECTED_YIELD` does.
     """
 
     label: str
@@ -764,7 +764,7 @@ FIXTURE_COMMITS: Final[tuple[FixtureCommit, ...]] = (
         subject=_MERGE_SUBJECT,
         sha="f4e2610fed21c5a1c9026f133932d22c76852dfc",
         walked=False,
-        rejection=GateRejection.MERGE_COMMIT,
+        rejection=None,
     ),
 )
 
@@ -772,7 +772,6 @@ FIXTURE_COMMITS: Final[tuple[FixtureCommit, ...]] = (
 # one of these never reaches `decide_gate`, so it is examined but is not a candidate.
 _DECIDED_BEFORE_THE_GATE: Final = frozenset(
     {
-        GateRejection.MERGE_COMMIT,
         GateRejection.NO_TEST_CHANGES,
         GateRejection.NO_SOURCE_CHANGES,
         GateRejection.PATCH_DID_NOT_APPLY,
@@ -792,14 +791,15 @@ EXPECTED_YIELD: Final = MiningYield(
         }
     ),
 )
-"""What ``assay mine`` must report for this repository: 9 examined, 6 candidates, 2 accepted.
+"""What ``assay mine`` must report for this repository: 9 examined, 6 candidates, 2 accepted,
+and one commit under each of the seven rejection reasons - 2 + 7 = 9 partitions what was walked.
 
 Derived from :data:`FIXTURE_COMMITS` rather than typed out, so the table and the number cannot
 disagree; ``tests/mine/test_fixture_repo.py`` pins the derivation's result all the same, since
 a table edited without meaning to move the yield is the mistake CLAUDE.md forbids.
 
-The one caveat. ``GitHistory.commits`` asks git for ``--no-merges``, so commit 11 is never
-yielded and ``rejected[MERGE_COMMIT]`` is **0** here: under M1's walk that reason is
-unreachable, and the merge sits in the history as a witness for the day something walks with
-merges, not as a count. Every other reason has a walked commit that produces it.
+The history holds eleven commits and the walk yields nine of them. The root has no parent and
+the merge has two, so ``GitHistory.commits`` never hands either to the miner; they are outside
+this accounting rather than reasons inside it, which is why there is no ``merge_commit``
+rejection to count (ADR-0015). Every one of the seven reasons has a walked commit behind it.
 """

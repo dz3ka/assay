@@ -57,6 +57,22 @@ def is_test_path(path: str) -> bool:
     return name.endswith(_TEST_SUFFIX) or (name.startswith(_TEST_PREFIX) and name.endswith(".py"))
 
 
+def pytest_selectors(test_files: Sequence[str]) -> tuple[str, ...]:
+    """The members of ``test_files`` a test runner can actually be pointed at.
+
+    A commit's test half is whatever :func:`is_test_path` claimed, which includes the data
+    files a suite ships - the fixture repository's own ``tests/data/sample.bin`` is one. Handing
+    those to pytest as a selection would either collect nothing or refuse the whole run, and
+    handing it *no* selection at all is worse: pytest would run the entire suite and the gate
+    would be measuring a different thing than it says it is.
+
+    Spelled here rather than in the caller because both halves of M1 need the same answer - the
+    pipeline decides ``no_test_changes`` on it, and the gate builds its argv from it - and two
+    spellings of "runnable" would let those two disagree about what was measured.
+    """
+    return tuple(path for path in test_files if path.endswith(".py"))
+
+
 def split_changes(paths: Sequence[str]) -> ChangeSplit:
     """Divide ``paths`` into the test half and the ground-truth half, keeping git's order.
 
