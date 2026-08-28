@@ -62,3 +62,4 @@ capability the code does not have is a defect, not a roadmap.
 | [0017](0017-still-red-stays-merged-until-m2-pins-the-environment.md) | `still_red` conflates "the fix did not work" with "no test ran", and stays merged until M2 | Accepted · applies 0015 |
 | [0018](0018-provisioning-installs-the-runtime-set-and-pytest.md) | Provisioning installs the project's runtime set plus pytest, and no extras or groups | Accepted · applies 0013 |
 | [0019](0019-m1-cannot-mine-unpinned-test-dependencies.md) | M1's host-execution model cannot mine a repository whose test dependencies are unpinned | Accepted · extends 0013 |
+| [0020](0020-the-wrap-phase-offers-the-retro-first.md) | The `/ship` wrap phase offers the retro before ADRs, map, docs and git | Accepted |

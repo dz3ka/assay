@@ -40,9 +40,9 @@ REQUIRED_HEADINGS = (
 )
 
 # SPEC section 8 names seven decisions; M0's implementation forced five more and M1's forced
-# seven. Nineteen is the number a reviewer should find, so a missing or unnumbered twentieth
-# fails here.
-EXPECTED_NUMBERS = {f"{number:04d}" for number in range(1, 20)}
+# seven. ADR-0020 is a process decision adopted from M1's retro. Twenty is the number a
+# reviewer should find, so a missing or unnumbered twenty-first fails here.
+EXPECTED_NUMBERS = {f"{number:04d}" for number in range(1, 21)}
 
 # A markdown link target that names an ADR file: `[0005](0005-no-winner-....md)`.
 _ADR_LINK = re.compile(r"\]\((\d{4}-[a-z0-9-]+\.md)\)")
