@@ -8,6 +8,10 @@ easy to get wrong from the outside: a module that raises at import time (which a
 whole run) and a node id that does not resolve (which refuses the whole selection with exit
 4 while its valid siblings never run).
 
+The one exception is the last test in this file: the one-second floor under a shared
+deadline has no path to a real run that would show it, which is why ADR-0016 left it
+unpinned and named the test below as its follow-up.
+
 ``TestReport``/``TestRunner``/``TestStatus`` are imported under aliases: pytest collects any
 module-level ``Test*`` class, and importing them under their own names would warn on every
 run of this file.
@@ -15,10 +19,13 @@ run of this file.
 
 import sys
 from pathlib import Path
+from time import monotonic
 
 import pytest
 
-from assay.host import PytestHostRunner
+from assay.core import AssayError
+from assay.host import PytestHostRunner, SelectorError
+from assay.host.pytest_runner import _remaining
 from assay.mine.models import TestStatus as Status
 from assay.mine.protocols import TestRunner as Runner
 
@@ -201,5 +208,28 @@ def test_no_pytest_cache_is_left_behind_in_the_workspace(tmp_path: Path) -> None
 def test_a_selector_that_would_change_the_command_is_refused(tmp_path: Path, selector: str) -> None:
     # Node ids are built from a mined repository's own file names. One that reaches the argv
     # as an option would silently run a different suite than the one the gate is deciding on.
-    with pytest.raises(ValueError, match="selector"):
+    with pytest.raises(SelectorError, match="selector"):
         _runner().run(tmp_path, [selector], timeout_s=_BUDGET_S)
+
+
+def test_a_refused_selector_is_catchable_as_an_assay_error(tmp_path: Path) -> None:
+    """The base class is the point, not the name: a walk catches ``AssayError`` to *record* it.
+
+    ``assay.host.git`` and ``assay.host.venv`` both turn a failure into a per-commit outcome by
+    catching that base, and the miner counts what they return. A refusal that escaped this
+    module as the bare ``ValueError`` it once was would pass straight through those handlers,
+    so one malformed node id would cost a whole walk its measurement instead of one row. The
+    sandbox runner's identical refusal is pinned the same way in ``tests/sandbox/test_image``.
+    """
+    with pytest.raises(AssayError, match="selector"):
+        _runner().run(tmp_path, ["--collect-only"], timeout_s=_BUDGET_S)
+
+
+def test_an_exhausted_deadline_still_buys_one_second_rather_than_zero() -> None:
+    # ADR-0016's named follow-up, and the only unexercised rule in this module: both passes
+    # are charged against one deadline, so the measuring pass routinely asks for what a slow
+    # collection pass already spent. A budget of zero reaches ``run_command`` as a kill on the
+    # spot - a child that never started is evidence of nothing, where a one-second run at
+    # least reports a timeout the yield can count. Deliberate, not an accident of ``max``.
+    assert _remaining(monotonic() - 5.0) == 1
+    assert _remaining(monotonic()) == 1

@@ -39,6 +39,7 @@ _REJECTED: Final = MappingProxyType(
         GateRejection.PATCH_DID_NOT_APPLY: 47,
         GateRejection.ALREADY_GREEN: 100,
         GateRejection.STILL_RED: 87,
+        GateRejection.NO_TESTS_EXECUTED: 0,
         GateRejection.UNSTABLE_GREEN: 0,
         GateRejection.RUN_TIMED_OUT: 0,
     }
@@ -56,16 +57,19 @@ def _yield(**overrides: object) -> MiningYield:
     return MiningYield.model_validate(fields)
 
 
-def test_the_gate_has_exactly_the_seven_rejection_reasons() -> None:
-    # The set is closed: yield accounting is a partition of the commits examined, so an
-    # eighth reason added without a place in the accounting would silently lose commits -
-    # and a reason the walk can never reach (ADR-0015) would silently overstate coverage.
+def test_the_gate_has_exactly_the_eight_rejection_reasons() -> None:
+    # The set is closed: yield accounting is a partition of the commits examined, so a ninth
+    # reason added without a place in the accounting would silently lose commits - and a
+    # reason the walk can never reach (ADR-0015) would silently overstate coverage. Spelled
+    # out as strings because these are wire values: a member renamed rather than added is a
+    # schema change to every yield already written down.
     assert {member.value for member in GateRejection} == {
         "no_test_changes",
         "no_source_changes",
         "patch_did_not_apply",
         "already_green",
         "still_red",
+        "no_tests_executed",
         "unstable_green",
         "run_timed_out",
     }
@@ -203,7 +207,7 @@ def test_a_mining_yield_refuses_a_negative_rejection_count() -> None:
         )
 
 
-def test_a_mining_yield_counts_a_commit_with_no_environment_outside_the_seven_reasons() -> None:
+def test_a_mining_yield_counts_a_commit_with_no_environment_outside_the_eight_reasons() -> None:
     # A commit whose workspace could not be provisioned was examined, was never a candidate,
     # and belongs under no rejection reason - the gate never spoke about it.
     reported = _yield(

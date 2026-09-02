@@ -12,17 +12,35 @@ The point is not the score. The point is that the score is defensible: a task on
 suite if its tests provably fail before the fix and provably pass after it, and the report
 refuses to name a winner it cannot separate.
 
-**Status: M1 complete.** M0's schemas, adapter protocol, redaction boundary, report pipeline and
-decision record landed, and `assay report` works end to end against a recorded result set.
-`assay mine` and `assay validate` now run the red→green gate over a real local clone: the walk,
-the test/source split, the proof that the tests fail at the parent and pass once the commit's own
-diff is applied, and the yield accounting for everything discarded on the way. `assay run` is the
-only command left that exits `3`. Mining has also been run by hand over a real repository:
-[743 commits of httpie](docs/milestones/m1-yield-httpie.md) examined for **0 valid tasks**, and
-that record explains why the zero is a fact about M1's provisioning rather than about httpie's
-history. Two things are true and worth reading twice: mining runs the
-target repository's build and test suite **on this machine, outside a sandbox** — the container is
-M2 — and no interval printed today is a measured one.
+**Status: M2 complete.** M0's schemas, adapter protocol, redaction boundary and report pipeline
+landed; M1's `assay mine` and `assay validate` run the red→green gate over a real local clone —
+the walk, the test/source split, the proof that the tests fail at the parent and pass once the
+commit's own diff is applied, and the yield accounting for everything discarded on the way. M2
+builds the two pieces a run stands on: a per-task container with memory, CPU and process ceilings
+and no network interface at all, whose tests assert those negatives rather than describe them, and
+tier-1 executable scoring, which decides a trial on the test report and nothing else. The two
+oracles are now measured rather than asserted — the ground-truth adapter scores 1.0 and the null
+adapter 0.0 over every task mined from the fixture repository, with mining on the host and each
+trial in a container. Pinning the environment in the task image also paid ADR-0017's debt:
+`no_tests_executed` is split out of `still_red`, so "the fix did not work" and "no test ran" have
+stopped sharing a tally. `assay run` is still the only command that exits `3` — the end-to-end
+run, n trials per task per tool, is M3.
+
+Mining has been run by hand over a real repository twice, and the second run is the one to read.
+M1 walked [743 commits of httpie](docs/milestones/m1-yield-httpie.md) for **0 valid tasks**. M2's
+pinned per-task images [re-walked the same 743](docs/milestones/m2-yield-httpie-pinned.md), and it
+is still **743 commits examined → 0 valid tasks**: the pinned image did not lift the reach limit
+[ADR-0019](docs/adr/0019-m1-cannot-mine-unpinned-test-dependencies.md) recorded, and that negative
+result is the finding. What moved is where the failure is counted. **125 of those 743 commits
+(16.8%) came back `unprovisioned`** — a commit no environment could be built for, which is not
+one of the eight rejection reasons and is not evidence about httpie: it is a sentence about
+Assay, counted and reported separately and never folded into the rejection set
+([ADR-0026](docs/adr/0026-the-image-residue-is-reported-not-counted.md)). The walk finished in
+426.6 seconds, and that is a symptom rather than a win — an image that dies inside `setup.py`
+dies in about a second, and 125 of the 127 commits that got past the pre-gate split never
+reached a container at all. Two things are still true and worth reading twice: the container
+holds *trials*, so a mining walk runs the target repository's build and test suite **on this
+machine, outside a sandbox** — and no interval printed today is a measured one.
 
 ## What it does today
 
@@ -49,10 +67,10 @@ ends of the scale is measuring something other than what it claims.
 single-parent commits newest-first, splits each into the tests it changed and the source it
 changed, checks the parent out into a throwaway worktree, and admits the commit as a task only if
 the tests fail there and pass once the commit's own diff is applied — twice, so a flaky green is
-caught rather than minted. What is discarded is counted under one of seven reasons, and the run
+caught rather than minted. What is discarded is counted under one of eight reasons, and the run
 prints yield rather than a task count. Against the fixture repository the test suite builds for
-itself, that reads `9 single-parent commits examined -> 2 valid tasks` and
-`6 candidates reached the gate, 0 unprovisioned`. `assay validate` re-runs the same gate over a
+itself, that reads `11 single-parent commits examined -> 2 valid tasks` and
+`7 candidates reached the gate, 0 unprovisioned`. `assay validate` re-runs the same gate over a
 suite that already exists and refuses it unless both recorded test sets are reproduced exactly
 ([ADR-0014](docs/adr/0014-revalidation-compares-recorded-sets-both-ways.md)).
 
@@ -61,7 +79,7 @@ anchored by tests that shipped with it, and — the part to read before pointing
 mining a repository runs that repository's build and tests on your machine, as you, outside a
 sandbox. `assay mine` says so on stderr before it runs anything, and
 [ADR-0013](docs/adr/0013-mining-runs-on-the-host-in-m1.md) records what that costs and what M2's
-container closes.
+container does not close: a trial runs inside it, a mining walk does not.
 
 **The report pipeline.** Three renderers — text, JSON, and a single self-contained HTML file
 with no external assets and no CDN. The refusal to declare a winner when confidence
@@ -91,19 +109,20 @@ fresh per render and never persisted
   this tool run here* — DNS, egress, proxies, TLS interception. Assay answers *is it any
   good here*. Portcall goes ahead of the deployment; Assay comes after it. They share no
   code.
-- **Running, scoring and the sandbox are not built.** `assay run` exits `3` with a message
-  naming the milestone that builds it, and there is no sandbox, no model call and no statistics
-  yet — so nothing has yet been scored against a mined task. Mining and validation are built and
-  narrow: one repository family, test-anchored commits, and execution on the host rather than in
-  a container. The intervals `assay report` prints are placeholders — pass^n ±0.25, clamped —
-  and all three renderers say so verbatim, above the fold, on every run. Real Wilson intervals
-  land in M4, and deleting the stub is a follow-up pinned in ADR-0005.
+- **The end-to-end run is not built.** `assay run` exits `3` with a message naming the milestone
+  that builds it: there is no model call, no n-trial loop and no statistics yet, so no real tool
+  has been scored against a mined task. What is built underneath it is the sandbox and tier-1
+  executable scoring, exercised today by the two oracles rather than by a tool. Mining and
+  validation stay narrow: one repository family, test-anchored commits, and a walk that runs on
+  the host rather than in a container. The intervals `assay report` prints are placeholders —
+  pass^n ±0.25, clamped — and all three renderers say so verbatim, above the fold, on every run.
+  Real Wilson intervals land in M4, and deleting the stub is a follow-up pinned in ADR-0005.
 
 ## Trust properties
 
 The subject of this project is measurement honesty, so these are load-bearing rather than
-aspirational. The first five are enforced in code today. The sixth names the constraints
-later milestones are being built against, and is listed as a constraint, not a capability.
+aspirational. All six are enforced in code today: the sixth was a constraint later milestones
+were being built against until M2's container turned it into one more thing with tests behind it.
 
 1. **The repository under evaluation never leaves the machine.** No upload, no telemetry.
 2. **Reports are redacted by default**, and there is still no opt-out flag at all. The salt
@@ -115,13 +134,18 @@ later milestones are being built against, and is listed as a constraint, not a c
    habit, so no output format can route around it.
 5. **Suites are content-addressed**, so any number can be traced back to the exact suite it
    was measured on.
-6. **Model-generated code will only ever run inside the sandbox**, and **networking is off
-   inside a trial** except for an allowlisted model endpoint, with dependencies baked into
-   the task image rather than installed mid-trial. Both are M2
-   ([ADR-0006](docs/adr/0006-network-off-inside-a-trial.md)). Mining is not a trial and runs no
-   model-generated code, but until that container exists it does run the *target repository's*
-   own build and tests on the host, which is a different exposure and an accepted one
-   ([ADR-0013](docs/adr/0013-mining-runs-on-the-host-in-m1.md)).
+6. **Model-generated code only ever runs inside the sandbox**, and **a trial has no network at
+   all** — `--network none` rather than a filter — with dependencies installed when the task
+   image is built rather than mid-trial
+   ([ADR-0006](docs/adr/0006-network-off-inside-a-trial.md)). The sandbox tests assert the
+   negatives: no name resolves, no raw address answers, nothing outside the trial's one writable
+   directory can be written, and the container is killed at its memory and wall-clock ceilings.
+   They fail rather than skip when Docker is absent, because a trust property nobody ran is not
+   one ([ADR-0024](docs/adr/0024-the-sandbox-tests-fail-without-docker-they-do-not-skip.md)).
+   M3's allowlisted model endpoint is the adapter's business and stays outside the container.
+   Mining is not a trial and runs no model-generated code, but it does run the *target
+   repository's* own build and tests on the host, which is a different exposure and an accepted
+   one ([ADR-0013](docs/adr/0013-mining-runs-on-the-host-in-m1.md)).
 
 ## Run
 
@@ -174,7 +198,13 @@ the alternatives that lost, and the consequences. ADRs 0001–0007 are the seven
 `SPEC.md` §8 names; 0008–0012 are decisions M0's implementation forced that the spec did not
 anticipate, and 0013–0019 are M1's — the host-execution posture, two rules about what an
 accounting number is allowed to claim, and four the by-hand httpie run forced about timeouts,
-provisioning, and what mining on the host cannot reach.
+provisioning, and what mining on the host cannot reach. 0020 is about how this repository is
+worked rather than about the tree — the wrap phase offers the retro first — and 0021–0031 are
+M2's: six on what a task image installs, what it still cannot reach, and how it proves it holds
+the commit its address claims; one on why the sandbox tests fail rather than skip when Docker is
+absent; and four on the edges of an executable verdict — a trial killed at its cgroup ceiling, a
+selector no runner would accept, an exit code pytest could not have produced, and why an errored
+trial never leaves the denominator.
 
 Start with [ADR-0002](docs/adr/0002-tasks-are-mined-not-authored.md) for why the tasks come
 out of git history rather than out of someone's judgement about what a good test case looks

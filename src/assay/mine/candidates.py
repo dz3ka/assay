@@ -66,11 +66,22 @@ def pytest_selectors(test_files: Sequence[str]) -> tuple[str, ...]:
     handing it *no* selection at all is worse: pytest would run the entire suite and the gate
     would be measuring a different thing than it says it is.
 
+    A path that would reach the runner's argv as a *command-line option* is not one of them
+    either. Both runners refuse a selector beginning with a dash rather than let it change the
+    command they build (``assay.host.SelectorError``, ``assay.sandbox.SandboxError``), so
+    passing one on would end a whole mining walk where one candidate should simply have been
+    discarded. The shape cannot arrive from git - ``assay.host.git`` refuses such a path when it
+    reads it - but it can arrive from a suite on disk, whose recorded ``test_files`` are taken as
+    written, and the answer is the same either way: it is not a path a runner can be pointed at,
+    so it is not selected. Deciding it here, on the task's own data, is what keeps every caller
+    from having to catch a refusal (ADR-0029). The empty string needs no separate test: it does
+    not end in ``.py``.
+
     Spelled here rather than in the caller because both halves of M1 need the same answer - the
     pipeline decides ``no_test_changes`` on it, and the gate builds its argv from it - and two
     spellings of "runnable" would let those two disagree about what was measured.
     """
-    return tuple(path for path in test_files if path.endswith(".py"))
+    return tuple(path for path in test_files if path.endswith(".py") and not path.startswith("-"))
 
 
 def split_changes(paths: Sequence[str]) -> ChangeSplit:

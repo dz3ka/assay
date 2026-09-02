@@ -2,6 +2,17 @@
 
 **Run date:** 2026-08-28 · **Assay at:** `48a3298` (M1, working tree) · **Milestone:** M1 exit criterion 4
 
+> **Erratum — 2026-09-01.** As first published, two sentences in this document (the candidate
+> count under the rejection table, and the summary in *Why the walk was not finished*) reported
+> **171 candidates (23.0%)**. The correct figure is **127 (17.1%)**. The rejection table in this
+> same document has always been right — it partitions the 743 examined commits as 572 + 127 + 44
+> — so the 171 was a transposition, and the percentage was computed from the transposed figure.
+> Nothing else changes: the walk length, the failure mode, the root cause and the headline result
+> of **0 accepted tasks** are unaffected. The error was caught in M2, when a pinned-image re-mine
+> over the identical commit range independently reproduced 743 / 572 / 127 / 44 exactly — which
+> also establishes that the walk is deterministic across M1 and M2. See
+> `docs/milestones/m2-yield-httpie-pinned.md`.
+
 ## What was run
 
 ```
@@ -35,7 +46,7 @@ below is recomputed from its per-commit progress lines, one per examined commit.
 | *unprovisioned* (not a rejection; a commit no environment could be built for) | 0 | — |
 | **accepted** | **0** | **0.0%** |
 
-171 commits (23.0%) reached the gate as candidates. **Not one was accepted.**
+127 commits (17.1%) reached the gate as candidates. **Not one was accepted.**
 
 ## What the zero means — read this before quoting the number
 
@@ -96,7 +107,7 @@ The walk was left running in the background across a session boundary and was ki
 743. It was not restarted, deliberately: the diagnosis above shows that every candidate is
 discarded for one proven environment reason, so extending the walk from 743 to 1797 commits would
 grow the denominator of a number that is already known not to measure httpie. The 743-commit
-sample — 171 candidates, uniform failure mode, root cause identified and reproduced — establishes
+sample — 127 candidates, uniform failure mode, root cause identified and reproduced — establishes
 the finding. Completing the walk is worth doing only *after* M2's pinned images make the result
 mean something.
 

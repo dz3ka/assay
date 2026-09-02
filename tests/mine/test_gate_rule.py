@@ -160,6 +160,65 @@ def test_a_confirmation_run_that_did_not_exit_cleanly_is_not_evidence_of_green()
     assert decide_gate(red, greens).rejection is GateRejection.STILL_RED
 
 
+def test_a_candidate_whose_tests_never_ran_at_all_is_not_reported_as_still_red() -> None:
+    # The split ADR-0017 deferred to M2. Exit 4 with no statuses and nothing uncollectable is
+    # "no test ran", not "the fix did not work": the two are opposite claims about a
+    # repository, and merging them made a `still_red` tally unusable as evidence about one.
+    # Both ends have to say it - see the discrimination cases below.
+    red = _report({}, exit_code=4)
+    greens = [_report({}, exit_code=4) for _ in range(GREEN_CONFIRMATION_RUNS)]
+
+    outcome = decide_gate(red, greens)
+
+    assert outcome.rejection is GateRejection.NO_TESTS_EXECUTED
+    assert outcome.fail_to_pass == ()
+    assert outcome.pass_to_pass == ()
+
+
+def test_a_selection_that_resolved_to_nothing_at_both_ends_also_ran_no_test() -> None:
+    # Exit 5 - the selection collected nothing at all - is the other half of `_NOTHING_RAN`,
+    # and it is the same non-evidence as exit 4 once both ends agree on it.
+    red = _report({}, exit_code=5)
+    greens = [_report({}, exit_code=5) for _ in range(GREEN_CONFIRMATION_RUNS)]
+
+    assert decide_gate(red, greens).rejection is GateRejection.NO_TESTS_EXECUTED
+
+
+def test_a_green_run_that_really_failed_is_still_red_however_the_red_run_ended() -> None:
+    # The discrimination that keeps the new reason honest: the confirmation runs executed the
+    # tests and they failed, so the fix demonstrably did not work. Charging that to
+    # `no_tests_executed` because the *red* run happened to run nothing would understate the
+    # gate's most important discard.
+    red = _report({}, exit_code=4)
+    greens = [_report({_TARGET: Status.FAILED}) for _ in range(GREEN_CONFIRMATION_RUNS)]
+
+    assert decide_gate(red, greens).rejection is GateRejection.STILL_RED
+
+
+def test_a_red_run_with_real_evidence_is_still_red_when_the_green_runs_go_quiet() -> None:
+    # And the other direction: red named a failing test, so something was measurable at the
+    # parent. A confirmation run that then ran nothing is a broken run, not proof that the
+    # candidate was never testable - the reason exists for candidates nothing could be
+    # learned about at all.
+    red = _report({_TARGET: Status.FAILED})
+    greens = [_report({}, exit_code=4) for _ in range(GREEN_CONFIRMATION_RUNS)]
+
+    assert decide_gate(red, greens).rejection is GateRejection.STILL_RED
+
+
+def test_a_file_that_would_not_collect_is_evidence_rather_than_silence() -> None:
+    # `uncollectable` is a module that failed to import - a run that got far enough to say
+    # something about a named file. That is the collect-error shape, and it is exactly what
+    # the httpie record insists must not be described as "nothing ran" (ADR-0017).
+    red = _report({}, uncollectable=("tests/test_parser.py",), exit_code=4)
+    greens = [
+        _report({}, uncollectable=("tests/test_parser.py",), exit_code=4)
+        for _ in range(GREEN_CONFIRMATION_RUNS)
+    ]
+
+    assert decide_gate(red, greens).rejection is GateRejection.STILL_RED
+
+
 def test_a_run_that_proved_no_test_turned_green_is_rejected() -> None:
     # The commit deleted the failing test rather than fixing it: red was genuinely red and
     # the confirmation runs are genuinely green, but nothing crossed from one to the other,

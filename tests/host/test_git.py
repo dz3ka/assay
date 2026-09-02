@@ -17,8 +17,10 @@ from pathlib import Path
 
 import pytest
 
-from assay.host import GitError, GitHistory
+from assay.host import GitError, GitHistory, checkout_state
+from assay.host.git import _as_utc_instant
 from assay.mine.protocols import History
+from tests.fixture_repo import FIXTURE_COMMITS, build_fixture_repo
 
 # Identity and line endings on every invocation, so a fixture repository does not depend on
 # the ~/.gitconfig of whoever is running the suite.
@@ -39,15 +41,17 @@ _BASE_SOURCE = "def add(a, b):\n    return 0\n"
 _FIXED_SOURCE = "def add(a, b):\n    return a + b\n"
 
 
-def _git(repo: Path, *arguments: str, when: str | None = None) -> str:
+def _git(repo: Path, *arguments: str, when: str | None = None, authored: str | None = None) -> str:
     """Drive git directly, so the fixtures do not depend on the module under test.
 
     ``when`` pins both timestamps of a commit. Without it two commits made in the same second
     tie, and `git log`'s newest-first order stops being a fact the fixture can assert.
+    ``authored`` splits the pair, which is the shape a rebase or a cherry-pick leaves behind
+    and the only way to tell an author date from a committer date apart.
     """
     environment = dict(os.environ)
     if when is not None:
-        environment["GIT_AUTHOR_DATE"] = when
+        environment["GIT_AUTHOR_DATE"] = authored if authored is not None else when
         environment["GIT_COMMITTER_DATE"] = when
     completed = subprocess.run(
         ["git", *_PINNED, *arguments],
@@ -146,6 +150,71 @@ def test_the_walk_stops_at_the_limit_it_was_given(tmp_path: Path) -> None:
     history, _ = _history(tmp_path)
 
     assert _subjects(history, limit=1) == ["docs: a commit on a branch"]
+
+
+def test_a_commit_dates_itself_as_the_rfc3339_instant_git_recorded(tmp_path: Path) -> None:
+    # The SPEC section 9 fixture rather than a repository built here, because that one pins
+    # `GIT_COMMITTER_DATE` to `_FIRST_COMMIT_EPOCH_S + ordinal * _COMMIT_INTERVAL_S` at
+    # `+0000` (`tests/fixture_repo.py`). Its root commit therefore names one instant on the
+    # Windows dev host and on Linux CI alike, and the whole string is what
+    # `uv --exclude-newer` is handed verbatim.
+    repo = build_fixture_repo(tmp_path / "repo")
+    history = GitHistory(repo, worktree_root=tmp_path / "worktrees")
+
+    # One whole string, not a set of spellings: git 2.55 prints a UTC offset as `Z` under
+    # `%cI` where older git printed `+00:00`, and `committed_at` now canonicalises both to the
+    # first (ADR-0022). Two spellings reaching the caller would be two Dockerfiles, two content
+    # addresses and two images for one commit, depending on the git build of the host that
+    # mined it - so the assertion is exact about the instant *and* about how it is written.
+    assert history.committed_at(FIXTURE_COMMITS[0].sha) == "2023-11-14T22:13:20Z"
+
+
+def test_a_commit_dates_itself_by_when_it_was_committed_not_when_it_was_authored(
+    tmp_path: Path,
+) -> None:
+    # The distinction a rebase or a cherry-pick creates, and the reason `%cI` is the format:
+    # the author date can predate the tree the commit produced by years, and a dependency
+    # resolution pinned to it would be pinned to a repository state that never held this
+    # commit.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--initial-branch=main")
+    _write(repo, "README.md", "fixture\n")
+    _git(repo, "add", "-A")
+    _git(
+        repo,
+        "commit",
+        "-m",
+        "replayed: authored long before it was committed",
+        when="2024-01-01T00:00:01+02:00",
+        authored="2019-06-30T12:00:00+02:00",
+    )
+    history = GitHistory(repo, worktree_root=tmp_path / "worktrees")
+
+    # The committer date shifted into UTC, which proves both rules in one assertion: the
+    # author date (2019) is nowhere in the answer, and the `+02:00` git recorded left as the
+    # canonical `Z` spelling the content address is computed from.
+    assert history.committed_at(_git(repo, "rev-parse", "HEAD").strip()) == "2023-12-31T22:00:01Z"
+
+
+@pytest.mark.parametrize(
+    ("recorded", "canonical"),
+    [
+        ("2023-11-14T22:13:20Z", "2023-11-14T22:13:20Z"),
+        ("2023-11-14T22:13:20+00:00", "2023-11-14T22:13:20Z"),
+        ("2024-01-01T00:00:01+02:00", "2023-12-31T22:00:01Z"),
+    ],
+    ids=["zulu", "zero-offset", "eastern-offset"],
+)
+def test_every_spelling_git_prints_canonicalises_to_the_same_utc_instant(
+    recorded: str, canonical: str
+) -> None:
+    # Asserted at the helper rather than through `committed_at`, deliberately: this host's git
+    # is 2.55, which prints `Z`, and no repository built here can be made to print `+00:00`.
+    # The public route cannot reproduce the trigger, so a test that went through it would pass
+    # without ever running the case that breaks - the control has to run or the result means
+    # nothing. The old spelling exists here as a literal because that is the only place it can.
+    assert _as_utc_instant(recorded) == canonical
 
 
 def test_changed_paths_are_the_files_the_commit_touched(tmp_path: Path) -> None:
@@ -319,6 +388,9 @@ def test_a_revision_that_is_not_an_object_name_is_refused(tmp_path: Path, hostil
     with pytest.raises(GitError):
         history.worktree(hostile).__enter__()
 
+    with pytest.raises(GitError):
+        history.committed_at(hostile)
+
 
 def test_a_failing_git_command_surfaces_as_a_git_error(tmp_path: Path) -> None:
     empty = tmp_path / "not-a-repo"
@@ -327,3 +399,64 @@ def test_a_failing_git_command_surfaces_as_a_git_error(tmp_path: Path) -> None:
 
     with pytest.raises(GitError):
         list(history.commits(limit=None))
+
+
+def _checkout(tmp_path: Path) -> Path:
+    """A repository holding one commit and nothing else - the shape a build context has.
+
+    Deliberately not `_history`'s four-commit fixture: what `checkout_state` answers is about
+    a working tree rather than about a walk, so the state under test is the tree's, and a
+    single commit makes "clean" unambiguous.
+    """
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    _git(repo, "init", "--initial-branch=main")
+    _write(repo, "src/app.py", _BASE_SOURCE)
+    _commit(repo, "root: the state a build context is taken from", when="2024-01-01T00:00:01+00:00")
+    return repo
+
+
+def test_a_clean_checkout_names_the_full_commit_it_holds_and_nothing_else(tmp_path: Path) -> None:
+    repo = _checkout(tmp_path)
+
+    state = checkout_state(repo)
+
+    # The full object name, not an abbreviation: this is what an image ends up claiming it was
+    # built from, and two repositories can abbreviate to the same seven characters.
+    assert state.head == _git(repo, "rev-parse", "HEAD").strip()
+    assert len(state.head) == 40
+    assert state.changed == ()
+
+
+def test_a_tracked_file_modified_after_the_checkout_is_reported_as_changed(tmp_path: Path) -> None:
+    repo = _checkout(tmp_path)
+    _write(repo, "src/app.py", _FIXED_SOURCE)
+
+    state = checkout_state(repo)
+
+    # The porcelain line whole, status prefix included. What HEAD names and what the tree
+    # actually holds have come apart, and only the caller knows whether that matters.
+    assert state.changed == (" M src/app.py",)
+    assert state.head == _git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_an_untracked_file_is_reported_as_changed_without_being_asked_for(tmp_path: Path) -> None:
+    # The case the whole answer exists for: a file git never heard of is still a file that
+    # would be copied into a build context, so `--porcelain`'s default must not be narrowed
+    # by an `--untracked-files` flag.
+    repo = _checkout(tmp_path)
+    _write(repo, "scratch.txt", "written after the checkout\n")
+
+    state = checkout_state(repo)
+
+    assert state.changed == ("?? scratch.txt",)
+
+
+def test_a_path_that_is_not_a_checkout_is_refused_rather_than_answered(tmp_path: Path) -> None:
+    # Loudly, in the idiom the rest of this module uses: "there is no commit here" answered as
+    # an empty head would be an image addressed to nothing.
+    empty = tmp_path / "not-a-repo"
+    empty.mkdir()
+
+    with pytest.raises(GitError):
+        checkout_state(empty)

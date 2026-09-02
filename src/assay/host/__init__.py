@@ -9,11 +9,16 @@ Import these names from ``assay.host`` rather than from the submodules; the spli
 ``process`` (the one call site) and ``git`` (the one caller of that call site in M1) is an
 implementation detail, this surface is not.
 
-Nothing here is pure. Everything above it - the miner, the validator, the scorer - is, and
-takes an instance of the ``History`` protocol :class:`GitHistory` satisfies (CLAUDE.md).
+Nothing here is pure, with one deliberate exception: :mod:`assay.host.junit` starts nothing
+and opens nothing, and lives here rather than above the seam because what it reads is a
+report only a run on this side produces - by :class:`PytestHostRunner` in M1, and by a run
+inside the sandbox from M2. It is not exported: its caller is a module, not a milestone.
+
+Everything *above* the seam - the miner, the validator, the scorer - is pure, and takes an
+instance of the ``History`` protocol :class:`GitHistory` satisfies (CLAUDE.md).
 """
 
-from assay.host.git import GitError, GitHistory
+from assay.host.git import CheckoutState, GitError, GitHistory, checkout_state
 from assay.host.process import (
     CommandFailedError,
     CommandResult,
@@ -21,10 +26,11 @@ from assay.host.process import (
     minimal_env,
     run_command,
 )
-from assay.host.pytest_runner import PytestHostRunner
+from assay.host.pytest_runner import PytestHostRunner, SelectorError
 from assay.host.venv import EnvironmentSetupError, provision_venv
 
 __all__ = [
+    "CheckoutState",
     "CommandFailedError",
     "CommandResult",
     "CommandTimeoutError",
@@ -32,6 +38,8 @@ __all__ = [
     "GitError",
     "GitHistory",
     "PytestHostRunner",
+    "SelectorError",
+    "checkout_state",
     "minimal_env",
     "provision_venv",
     "run_command",

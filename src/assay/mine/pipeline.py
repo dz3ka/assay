@@ -180,6 +180,13 @@ def run_gate(
         report no yield at all. It is counted as ``MiningYield.unprovisioned``.
     """
     selectors = pytest_selectors(split.test_files)
+    if not selectors:
+        # Never pytest with no selection: it would collect the whole repository and the gate
+        # would report that run as this candidate's red or green. ``_mine_one`` settles the same
+        # question on the commit's diff before it ever gets here, but ``revalidate_suite`` calls
+        # this function directly, and a suite's recorded ``test_files`` are whatever was written
+        # down - so this is where a task holding nothing runnable becomes one discarded row.
+        return _rejected(GateRejection.NO_TEST_CHANGES)
     with history.worktree(commit.parent) as workspace:
         if not history.apply_patch(workspace, test_patch):
             return _rejected(GateRejection.PATCH_DID_NOT_APPLY)

@@ -13,7 +13,14 @@ import re
 
 import pytest
 
-from assay.mine import ChangeSplit, build_prompt, is_test_path, mint_task_id, split_changes
+from assay.mine import (
+    ChangeSplit,
+    build_prompt,
+    is_test_path,
+    mint_task_id,
+    pytest_selectors,
+    split_changes,
+)
 from assay.suite.models import _TASK_ID_PATTERN
 
 _SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -85,6 +92,41 @@ def test_the_split_keeps_every_path_exactly_once_and_in_order() -> None:
 
 def test_the_split_of_nothing_is_two_empty_halves() -> None:
     assert split_changes(()) == ChangeSplit(test_files=(), source_files=())
+
+
+@pytest.mark.parametrize(
+    ("path", "kept"),
+    [
+        ("tests/test_ok.py", True),
+        ("tests/test suite.py", True),
+        ("tests/data/sample.bin", False),
+        ("-x.py", False),
+        ("--co.py", False),
+        ("", False),
+    ],
+    ids=[
+        "ordinary-test-module",
+        "path-with-a-space",
+        "data-file",
+        "reads-as-an-option",
+        "reads-as-a-long-option",
+        "empty",
+    ],
+)
+def test_only_a_path_a_runner_can_be_pointed_at_survives_selection(path: str, kept: bool) -> None:
+    # A selector is one argv entry, so a leading dash makes it a flag and an empty string makes
+    # it nothing at all - both runners refuse those rather than run a command nobody asked for.
+    # A space is not that: argv is not a shell line, so narrowing on it would drop a selection
+    # the runners would have accepted.
+    assert pytest_selectors((path,)) == ((path,) if kept else ())
+
+
+def test_selection_drops_the_unusable_members_and_keeps_the_rest() -> None:
+    # Filtered, not refused wholesale: a commit that changed a data file and a test module has
+    # a red run to be had, and it is the run over the test module.
+    selected = pytest_selectors(("tests/data/sample.bin", "tests/test_a.py", "-x.py"))
+
+    assert selected == ("tests/test_a.py",)
 
 
 def test_a_minted_id_names_the_repo_and_the_commit() -> None:

@@ -63,3 +63,15 @@ capability the code does not have is a defect, not a roadmap.
 | [0018](0018-provisioning-installs-the-runtime-set-and-pytest.md) | Provisioning installs the project's runtime set plus pytest, and no extras or groups | Accepted · applies 0013 |
 | [0019](0019-m1-cannot-mine-unpinned-test-dependencies.md) | M1's host-execution model cannot mine a repository whose test dependencies are unpinned | Accepted · extends 0013 |
 | [0020](0020-the-wrap-phase-offers-the-retro-first.md) | The `/ship` wrap phase offers the retro before ADRs, map, docs and git | Accepted |
+| [0021](0021-resolution-is-pinned-to-the-base-commit-era.md) | Dependency resolution is pinned to the base commit's era, once, at image build time | Accepted · amends 0019 |
+| [0022](0022-the-resolution-cutoff-has-one-canonical-spelling.md) | The resolution cutoff has one canonical spelling, produced at the git seam | Accepted · applies 0021 and 0011 |
+| [0023](0023-the-image-installs-declared-test-extras.md) | The task image installs the repository's declared test extras, and ADR-0018 stops at the host | Accepted · amends 0018 |
+| [0024](0024-the-sandbox-tests-fail-without-docker-they-do-not-skip.md) | The sandbox tests fail when Docker is absent; there is no skip path and no availability guard | Accepted · applies 0006 |
+| [0025](0025-the-one-widening-is-spent.md) | The one widening is spent, and what it still cannot reach is reported rather than patched | Accepted · amends 0019 and 0021 |
+| [0026](0026-the-image-residue-is-reported-not-counted.md) | The task image's residue is reported in prose, not minted as a ninth rejection reason | Accepted · applies 0015 |
+| [0027](0027-the-context-must-be-the-commit-the-tag-claims.md) | A task image's build context is proved to be the commit its address claims | Accepted · applies 0007 |
+| [0028](0028-a-cgroup-kill-is-the-tools-failure.md) | A trial killed at its cgroup ceiling scores `FAILED`, read after the timeout and before the exit-code band | Accepted · narrows 0030 |
+| [0029](0029-a-refusable-selector-is-decided-not-caught.md) | A selector no runner would accept is decided in the miner, never caught at the seam | Accepted · applies 0015 and 0027 |
+| [0030](0030-an-out-of-band-exit-code-is-assays-malfunction.md) | An exit code pytest could not have produced means Assay malfunctioned, and scores `ERRORED` | Accepted · narrows 0003 |
+| [0031](0031-an-errored-trial-never-leaves-the-denominator.md) | An errored trial never leaves the denominator, so ADR-0028's verdict rests on legibility | Accepted · amends 0028 |
+| [0032](0032-a-test-directory-is-a-test-change.md) | A path under a test directory is a test change, and the yield names what the rule admits | Accepted · applies 0026 and 0015 |

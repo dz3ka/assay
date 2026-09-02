@@ -2,9 +2,9 @@
 
 Everything else in this suite tests a rule on values. This file runs the real thing - a real
 git history, real worktrees, a real uv environment per candidate and real pytest processes -
-and asserts the number CLAUDE.md forbids adjusting: 9 commits examined, 6 candidates, 2
-accepted, one commit under each of the seven rejection reasons. If the miner's yield changes,
-that is a deliberate decision with an ADR behind it, not a test to update.
+and asserts the number CLAUDE.md forbids adjusting: 11 commits examined, 7 candidates, 2
+accepted, and at least one commit under each of the eight rejection reasons. If the miner's
+yield changes, that is a deliberate decision with an ADR behind it, not a test to update.
 
 Two properties are asserted, not one. The totals adding up is the weaker claim - two reasons
 swapped would still add up - so every walked fixture commit is also checked against the verdict
@@ -16,25 +16,47 @@ house style of one property per test: a run is an environment and three pytest p
 candidate, and paying that three times to assert three views of the same run would buy nothing
 but minutes. The per-run budget is a few seconds for the same reason - only ``slow_lookup``'s
 red run is slow, and it is slow by an hour.
+
+One rule here is witnessed by stubs instead, and the reason is in the fixture's favour: a test
+file that would be read as a command-line option cannot reach the miner from git at all, because
+``assay.host.git`` refuses such a path the moment it is reported (``src/assay/host/git.py:414``).
+Building a fixture commit around it is impossible, so the walk that must survive one, and the
+recorded suite that can genuinely carry one, are driven by a stub history and a stub runner.
 """
 
+from collections.abc import Iterator, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 
 import pytest
 
 from assay.host import GitHistory, PytestHostRunner, provision_venv
 from assay.mine import (
+    CommitRef,
     GateOutcome,
     GateRejection,
     MinedCommit,
+    RunnerFactory,
+    decide_gate,
     mine_suite,
+    pytest_selectors,
     revalidate_suite,
     revalidates,
     split_changes,
     tally_yield,
 )
+
+# TestReport and TestStatus are imported under other names on purpose: pytest tries to collect
+# any module-level name starting with "Test", and warns about these two on every run if they are
+# bound as they are spelled. `TestRunner` is here for the same reason.
+from assay.mine import (
+    TestReport as Report,
+)
 from assay.mine import (
     TestRunner as Runner,
+)
+from assay.mine import (
+    TestStatus as Status,
 )
 from assay.suite import SuiteBody, Task
 from tests.fixture_repo import EXPECTED_YIELD, FIXTURE_COMMITS, build_fixture_repo
@@ -49,6 +71,11 @@ _PROVISION_TIMEOUT_S = 300
 
 _REPO_SLUG = "widget-fixture"
 
+# pytest's usage error, which is what a root conftest that will not import exits with. Spelled
+# here rather than imported from `assay.mine.gate`: this file asserts what the runner actually
+# produced, and an oracle that reads its answer out of the code under test proves nothing.
+_PYTEST_USAGE_ERROR = 4
+
 _MEAN_OF_EMPTY_TARGET = "tests/test_calc.py::test_mean_of_no_values_is_zero"
 
 # The rest of `tests/test_calc.py`, which passes on both sides of that commit. A task minted
@@ -59,6 +86,27 @@ _CALC_PASS_TO_PASS = (
     "tests/test_calc.py::test_mean_divides_by_the_count",
     "tests/test_calc.py::test_total_adds_the_values",
 )
+
+# The stub walk's commits. Full-length hex because an accepted candidate writes its parent down
+# as a task's `base_commit`, and the suite schema takes 40 characters or nothing; no git object
+# is named by any of them.
+_STUB_PARENT = "0" * 40
+_STUB_UNRUNNABLE = "a" * 40
+_STUB_ORDINARY = "b" * 40
+
+# A changed test file no runner can be pointed at, in the one shape `is_test_path` still calls a
+# test change: a leading dash makes it an option, and the `_test.py` suffix keeps it in the test
+# half of the split, where the interesting failure lives.
+_OPTION_SHAPED_TEST = "-x_test.py"
+
+# The recorded shape of the same problem: a suite's `test_files` are taken as written, so a task
+# on disk can carry a path git would never have handed the miner.
+_RECORDED_OPTION_SHAPED = "-x.py"
+
+# A test file whose only property is being runnable, and the source file beside it.
+_ORDINARY_TEST = "tests/test_widget.py"
+_ORDINARY_SOURCE = "src/widget.py"
+_STUB_TARGET = "tests/test_widget.py::test_widget"
 
 
 def _runner_for(workspace: Path) -> Runner | None:
@@ -140,6 +188,46 @@ def test_mining_the_fixture_repository_reports_exactly_the_expected_yield(tmp_pa
         assert task.metadata["mined_from_commit"] == found.commit.sha
 
 
+def test_the_broken_conftest_commit_runs_no_test_at_either_end_of_the_gate(
+    tmp_path: Path,
+) -> None:
+    # The witness for `no_tests_executed`, asserted as evidence before it is asserted as a
+    # verdict. The signature is the one ADR-0017 describes and `docs/milestones/m1-yield-
+    # httpie.md` measured on a real repository: pytest exit 4, no statuses at all, and an
+    # **empty** `uncollectable` - a run that never got as far as a module it could not
+    # collect. Reading it as a collect error would be a different claim about a different
+    # failure, so the three fields are pinned individually rather than through the verdict.
+    #
+    # Both ends, not just the red one: the gate may only report "no test ran" when the
+    # confirmation run says so too, since a red that ran nothing and a green that ran and
+    # failed is an ordinary `still_red`.
+    history = _history(tmp_path)
+    commit = next(
+        found for found in history.commits(limit=None) if found.sha == _sha("broken_conftest_units")
+    )
+    split = split_changes(history.changed_paths(commit.parent, commit.sha))
+    selectors = pytest_selectors(split.test_files)
+    test_patch = history.diff(commit.parent, commit.sha, split.test_files)
+    ground_truth_patch = history.diff(commit.parent, commit.sha, split.source_files)
+
+    with history.worktree(commit.parent) as workspace:
+        assert history.apply_patch(workspace, test_patch)
+        runner = _runner_for(workspace)
+        assert runner is not None
+        red = runner.run(workspace, selectors, timeout_s=_RUN_TIMEOUT_S)
+        assert history.apply_patch(workspace, ground_truth_patch)
+        green = runner.run(workspace, selectors, timeout_s=_RUN_TIMEOUT_S)
+
+    for report in (red, green):
+        assert report.exit_code == _PYTEST_USAGE_ERROR
+        assert dict(report.statuses) == {}
+        assert report.uncollectable == ()
+        assert report.timed_out is False
+    # And the verdict that evidence earns: not `still_red`, which would report a fix that did
+    # not work when nothing was ever put to the test.
+    assert decide_gate(red, [green, green]).rejection is GateRejection.NO_TESTS_EXECUTED
+
+
 def test_a_task_that_still_goes_red_to_green_revalidates(tmp_path: Path) -> None:
     # `assay validate` on a suite whose one task is known good. Built from git rather than from
     # a mining run, so the revalidation path is exercised on its own: a suite that arrived on
@@ -168,7 +256,7 @@ def test_a_yield_reports_every_reason_including_the_ones_that_did_not_fire() -> 
     tallied = tally_yield([_outcome(None), _outcome(GateRejection.ALREADY_GREEN)])
 
     assert set(tallied.rejected) == set(GateRejection)
-    assert len(tallied.rejected) == 7
+    assert len(tallied.rejected) == 8
     assert tallied.rejected[GateRejection.ALREADY_GREEN] == 1
     assert tallied.rejected[GateRejection.STILL_RED] == 0
 
@@ -182,6 +270,7 @@ def test_a_yield_reports_every_reason_including_the_ones_that_did_not_fire() -> 
         (GateRejection.PATCH_DID_NOT_APPLY, False),
         (GateRejection.ALREADY_GREEN, True),
         (GateRejection.STILL_RED, True),
+        (GateRejection.NO_TESTS_EXECUTED, True),
         (GateRejection.UNSTABLE_GREEN, True),
         (GateRejection.RUN_TIMED_OUT, True),
     ],
@@ -192,6 +281,7 @@ def test_a_yield_reports_every_reason_including_the_ones_that_did_not_fire() -> 
         "patch did not apply",
         "already green",
         "still red",
+        "no tests executed",
         "unstable green",
         "run timed out",
     ],
@@ -225,7 +315,7 @@ def test_a_workspace_that_cannot_be_provisioned_does_not_stop_the_walk(tmp_path:
     assert len(mined) == EXPECTED_YIELD.commits_examined
     # The three reasons settled before a runner is ever asked for still stand; everything that
     # would have needed an environment has no verdict at all, and no task either.
-    assert [found.outcome is None for found in mined].count(True) == 6
+    assert [found.outcome is None for found in mined].count(True) == 7
     assert all(found.task is None for found in mined)
     assert {found.outcome.rejection for found in mined if found.outcome is not None} == {
         GateRejection.NO_TEST_CHANGES,
@@ -249,7 +339,7 @@ def test_the_fixture_yield_is_a_partition_with_nothing_unprovisioned() -> None:
     # SPEC §9's expected yield is a true statement about a repository every commit of which
     # can be provisioned, and stays one now that a third population exists.
     assert EXPECTED_YIELD.unprovisioned == 0
-    assert EXPECTED_YIELD.accepted + sum(EXPECTED_YIELD.rejected.values()) == 9
+    assert EXPECTED_YIELD.accepted + sum(EXPECTED_YIELD.rejected.values()) == 11
 
 
 @pytest.mark.parametrize(
@@ -276,6 +366,187 @@ def test_a_task_revalidates_only_when_it_reproduces_the_sets_it_recorded(
     # crossed then. A task whose recorded fail_to_pass has stopped failing at the base state is
     # a task the null adapter passes, and the null adapter brackets every real result at zero.
     assert revalidates(_recorded_task(), outcome) is valid
+
+
+def test_a_commit_whose_test_half_reads_as_an_option_is_rejected_without_ending_the_walk(
+    tmp_path: Path,
+) -> None:
+    # The runner refuses such a selector loudly, so the whole question is whether it is ever
+    # handed one. Decided here instead: the commit is examined, discarded under a reason the
+    # yield already counts, and the walk goes on to the next commit.
+    runner = _RecordingRunner()
+    history = _StubHistory(
+        tmp_path,
+        {
+            _STUB_UNRUNNABLE: (_OPTION_SHAPED_TEST, _ORDINARY_SOURCE),
+            _STUB_ORDINARY: (_ORDINARY_TEST, _ORDINARY_SOURCE),
+        },
+    )
+
+    mined = list(
+        mine_suite(
+            history=history,
+            runner_for=_always(runner),
+            repo_slug=_REPO_SLUG,
+            limit=None,
+            timeout_s=_RUN_TIMEOUT_S,
+        )
+    )
+
+    rejected, following = mined
+    assert rejected.outcome is not None
+    assert rejected.outcome.rejection is GateRejection.NO_TEST_CHANGES
+    assert rejected.task is None
+    # The observable proof that nothing ended: the next commit was not merely yielded, it was
+    # put through the gate and became a task.
+    assert following.task is not None
+    assert runner.calls == [(_ORDINARY_TEST,)] * 3
+
+
+def test_a_recorded_task_with_no_runnable_test_file_is_one_bad_row_not_a_dead_run(
+    tmp_path: Path,
+) -> None:
+    # `assay validate` walks a suite somebody else wrote, and `Task.test_files` is unconstrained
+    # beyond being repo-relative POSIX (ADR-0012), so this is the shape that genuinely arrives.
+    # It has to cost one row - reported as failing to revalidate - and not the rest of the run.
+    runner = _RecordingRunner()
+    suite = SuiteBody(
+        schema_version=1,
+        suite_name="stub",
+        tasks=(
+            _stub_task("widget-fixture-000000000001", (_RECORDED_OPTION_SHAPED,)),
+            _stub_task("widget-fixture-000000000002", (_ORDINARY_TEST,)),
+        ),
+    )
+
+    revalidated = list(
+        revalidate_suite(
+            suite=suite,
+            history=_StubHistory(tmp_path, {}),
+            runner_for=_always(runner),
+            timeout_s=_RUN_TIMEOUT_S,
+        )
+    )
+
+    [(bad, bad_outcome), (following, following_outcome)] = revalidated
+    assert bad_outcome is not None
+    assert bad_outcome.rejection is GateRejection.NO_TEST_CHANGES
+    assert not revalidates(bad, bad_outcome)
+    # And the task after it was still measured, which is the whole difference between a report
+    # with one bad row in it and no report at all.
+    assert following is suite.tasks[1]
+    assert following_outcome is not None
+    assert runner.calls == [(_ORDINARY_TEST,)] * 3
+
+
+def test_the_gate_never_points_a_runner_at_an_empty_selection(tmp_path: Path) -> None:
+    # An empty selection is not "run nothing": pytest run with no argument collects the whole
+    # repository, so the gate would decide on a suite nobody chose and record the verdict as
+    # this task's. The witness is a data file, which is a test change with nothing runnable in
+    # it - the same hole an unusable path leaves, reached from the recorded side.
+    runner = _RecordingRunner()
+    suite = SuiteBody(
+        schema_version=1,
+        suite_name="stub",
+        tasks=(_stub_task("widget-fixture-000000000001", ("tests/data/sample.bin",)),),
+    )
+
+    revalidated = list(
+        revalidate_suite(
+            suite=suite,
+            history=_StubHistory(tmp_path, {}),
+            runner_for=_always(runner),
+            timeout_s=_RUN_TIMEOUT_S,
+        )
+    )
+
+    assert all(runner.calls), f"the gate ran with an empty selection: {runner.calls}"
+    [(_, outcome)] = revalidated
+    assert outcome is not None
+    assert outcome.rejection is GateRejection.NO_TEST_CHANGES
+
+
+class _StubHistory:
+    """A walk with no git behind it, for the one rule a fixture commit cannot witness.
+
+    ``assay.host.git`` refuses a path that would be read as a command-line option the moment
+    git reports it (``src/assay/host/git.py:414``), so no commit can carry such a test file into
+    the miner and no fixture repository can be built to prove what happens when one does.
+
+    Every checkout is the same directory and every patch applies: this stub is about the paths
+    a commit reports, and the gate's other seams are proved against the real thing above.
+    """
+
+    def __init__(self, workspace: Path, changes: dict[str, tuple[str, ...]]) -> None:
+        self._workspace = workspace
+        self._changes = changes
+
+    def repo_url(self) -> str:
+        return "https://example.invalid/widget.git"
+
+    def commits(self, *, limit: int | None) -> Iterator[CommitRef]:
+        for sha in self._changes:
+            yield CommitRef(sha=sha, parent=_STUB_PARENT, subject=f"commit {sha[:7]}")
+
+    def changed_paths(self, parent: str, commit: str) -> tuple[str, ...]:
+        return self._changes[commit]
+
+    def diff(self, parent: str, commit: str, paths: Sequence[str]) -> str:
+        return f"--- a/{paths[0]}\n+++ b/{paths[0]}\n"
+
+    def worktree(self, commit: str) -> AbstractContextManager[Path]:
+        return nullcontext(self._workspace)
+
+    def apply_patch(self, workspace: Path, patch: str) -> bool:
+        return True
+
+
+class _RecordingRunner:
+    """Remembers every selection it was handed, and answers the first run red and the rest green.
+
+    One candidate's worth of answers, which is all any test here asks of it: a red that names a
+    failing test and two confirmation runs that agree it passes is the accepting shape, so a
+    walk that reaches the gate at all produces a task rather than an incidental rejection.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+
+    def run(self, workspace: Path, selectors: Sequence[str], *, timeout_s: int) -> Report:
+        self.calls.append(tuple(selectors))
+        red = len(self.calls) == 1
+        return Report(
+            statuses={_STUB_TARGET: Status.FAILED if red else Status.PASSED},
+            uncollectable=(),
+            exit_code=1 if red else 0,
+            timed_out=False,
+        )
+
+
+def _always(runner: Runner) -> RunnerFactory:
+    """The stub wiring: every workspace gets the same runner, and none is ever unprovisioned."""
+
+    def runner_for(workspace: Path) -> Runner | None:
+        return runner
+
+    return runner_for
+
+
+def _stub_task(task_id: str, test_files: tuple[str, ...]) -> Task:
+    """A suite row: the recorded test files matter, and nothing else in it does."""
+    return Task(
+        schema_version=1,
+        task_id=task_id,
+        repo_url="https://example.invalid/widget.git",
+        base_commit=_STUB_PARENT,
+        test_files=test_files,
+        test_patch="--- a/x\n+++ b/x\n",
+        ground_truth_patch="--- a/y\n+++ b/y\n",
+        fail_to_pass=(_STUB_TARGET,),
+        pass_to_pass=(),
+        prompt="fix it",
+        metadata={},
+    )
 
 
 def _recorded_task() -> Task:

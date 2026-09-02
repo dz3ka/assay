@@ -43,19 +43,28 @@ The history, oldest first:
  9   slow_lookup             adds a test that cannot finish when red     run_timed_out
 10   deterministic_jitter    tidies a test, touching no source file      no_source_changes
 11   merge_tidy              merges commit 10 back into main             not walked (merge)
+12   broken_conftest_units   adds a module and its test, and a root      no_tests_executed
+                             conftest that cannot be imported
+13   repair_conftest_units   repairs the conftest, touching no source    no_source_changes
 ===  ======================  ==========================================  ====================
 
-Commits 2-10 are what ``History.commits()`` yields, so ``commits_examined`` is **9**: the root
-has no parent, the merge has two, and neither is examined. Six of the nine
-reach :func:`assay.mine.decide_gate` and **2** of those are accepted. :data:`EXPECTED_YIELD`
-is that arithmetic as a value and :data:`FIXTURE_COMMITS` is the table it is derived from -
-both importable, because M1's end-to-end mining test asserts against them rather than prose.
+Commits 2-10, 12 and 13 are what ``History.commits()`` yields, so ``commits_examined`` is
+**11**: the root has no parent, the merge has two, and neither is examined. Seven of the
+eleven reach :func:`assay.mine.decide_gate` and **2** of those are accepted.
+:data:`EXPECTED_YIELD` is that arithmetic as a value and :data:`FIXTURE_COMMITS` is the table
+it is derived from - both importable, because M1's end-to-end mining test asserts against them
+rather than prose.
+
+Commits 12 and 13 are made **after** the merge, and that is load-bearing rather than
+incidental: every object name below is pinned, and inserting a commit anywhere earlier would
+rewrite every name after it. :data:`_AFTER_MERGE` carries the timestamp mechanics.
 
 Two properties of the history are deliberate and easy to undo by accident. Commit 6 repairs
-the test commit 5 leaves failing and commit 10 retires the flake commit 8 introduces, so the
-fixture's **HEAD is green, fast and deterministic** and an end-to-end test may run its whole
-suite. And every one of the seven ``GateRejection`` reasons has a *walked* commit that
-reaches it, so none of them is speculative.
+the test commit 5 leaves failing, commit 10 retires the flake commit 8 introduces and commit
+13 repairs the conftest commit 12 breaks, so the fixture's **tip is green, fast and
+deterministic** and an end-to-end test may run its whole suite. And every one of the eight
+``GateRejection`` reasons has a *walked* commit that reaches it, so none of them is
+speculative.
 """
 
 import os
@@ -451,6 +460,45 @@ def test_lookup_finds_the_key() -> None:
     assert lookup({"a": 1}, "a") == 1
 '''
 
+_UNITS = '''"""Converting between the units the widget reports temperatures in."""
+
+
+def celsius(fahrenheit: float) -> float:
+    """``fahrenheit`` expressed in degrees celsius."""
+    return (fahrenheit - 32.0) * 5.0 / 9.0
+'''
+
+_TEST_UNITS = """from widget.units import celsius
+
+
+def test_celsius_converts_the_freezing_point() -> None:
+    assert celsius(32.0) == 0.0
+"""
+
+# The commit that breaks the root conftest is the witness for ``no_tests_executed``, and the
+# signature it has to produce is an exact one: pytest exit **4**, **no statuses at all**, and
+# an **empty** ``uncollectable``. A root conftest is imported before anything is collected, so
+# an ImportError in it aborts the whole run with a usage error and no junit report is written
+# - which is not a collect error and must not be described as one (ADR-0017). That is the
+# shape ``docs/milestones/m1-yield-httpie.md`` measured on a real repository: a conftest
+# importing a test-only dependency the environment does not have.
+#
+# ``widget_fixtures`` is nowhere - not in the repository, not in the environment
+# ``uv pip install -e . pytest`` builds (ADR-0018) - so the import fails identically before and
+# after the ground truth is applied. That is what makes the two confirmation runs agree with
+# each other *and* with the red run: nothing ran at either end, which is precisely the evidence
+# ``still_red`` used to absorb. A break the ground truth repaired would make this an ordinary
+# accepted commit instead.
+_CONFTEST_BROKEN = '''"""Broken on purpose: this conftest cannot be imported.
+
+It imports a test-only helper this project never installs, so pytest aborts with a usage error
+before collecting anything and the run reports no test at all - neither a failure nor a collect
+error. Assay counts that as ``no_tests_executed`` rather than as a fix that did not work.
+"""
+
+import widget_fixtures  # noqa: F401 - deliberately absent; see tests/fixture_repo.py
+'''
+
 
 def _text(content: str) -> bytes:
     """The exact bytes git will hash for a text file: UTF-8, LF, no BOM."""
@@ -551,6 +599,37 @@ _HISTORY: Final[tuple[tuple[str, str, Mapping[str, bytes]], ...]] = (
 _BRANCH_LABEL: Final = "deterministic_jitter"
 _MERGE_LABEL: Final = "merge_tidy"
 
+# The commits made *after* the merge, in the same shape as `_HISTORY`. They are a second tuple
+# rather than two more entries in the first one for a reason that is not style: `_environment`
+# dates a commit from its ordinal, the merge takes `len(_HISTORY)`, and appending to `_HISTORY`
+# would therefore move the merge's timestamp and rewrite its object name - and the object names
+# are the cross-platform canary this whole module exists to keep still. Numbered after the
+# merge, all eleven names above stay exactly as they were.
+#
+# `broken_conftest_units` breaks the root conftest in the same commit that adds a module and a
+# test for it: the test half is the broken conftest plus the new test file, the ground-truth
+# half is the new module, and neither half repairs the conftest - so no test executes at either
+# end of the gate and the commit is the witness for `no_tests_executed`. `repair_conftest_units`
+# puts the conftest back, touching no source file at all, which makes it a second witness for
+# `no_source_changes` and restores the green, fast, deterministic tree the fixture keeps at its
+# tip.
+_AFTER_MERGE: Final[tuple[tuple[str, str, Mapping[str, bytes]], ...]] = (
+    (
+        "broken_conftest_units",
+        "units: convert fahrenheit to celsius",
+        {
+            "conftest.py": _text(_CONFTEST_BROKEN),
+            "widget/units.py": _text(_UNITS),
+            "tests/test_units.py": _text(_TEST_UNITS),
+        },
+    ),
+    (
+        "repair_conftest_units",
+        "tests: stop the root conftest importing a helper nobody installs",
+        {"conftest.py": _text(_CONFTEST)},
+    ),
+)
+
 
 def build_fixture_repo(root: Path) -> Path:
     """Build the fixture repository under ``root`` and return the path to it.
@@ -586,11 +665,7 @@ def build_fixture_repo(root: Path) -> Path:
     for ordinal, (label, subject, files) in enumerate(_HISTORY):
         if label == _BRANCH_LABEL:
             _git(repo, "checkout", "--quiet", "-b", _BRANCH_NAME, ordinal=ordinal)
-        for path, content in files.items():
-            _write(repo, path, content)
-        _git(repo, "add", "--all", ordinal=ordinal)
-        _git(repo, "commit", "--quiet", "-m", subject, ordinal=ordinal)
-        built[label] = _head(repo)
+        built[label] = _commit(repo, subject, files, ordinal=ordinal)
 
     merge_ordinal = len(_HISTORY)
     _git(repo, "checkout", "--quiet", _TRUNK_NAME, ordinal=merge_ordinal)
@@ -605,6 +680,11 @@ def build_fixture_repo(root: Path) -> Path:
         ordinal=merge_ordinal,
     )
     built[_MERGE_LABEL] = _head(repo)
+
+    # After the merge, and numbered after it: see `_AFTER_MERGE` for why the ordinals continue
+    # rather than being folded into the first loop.
+    for offset, (label, subject, files) in enumerate(_AFTER_MERGE, start=merge_ordinal + 1):
+        built[label] = _commit(repo, subject, files, ordinal=offset)
 
     _check_pinned(built)
     return repo
@@ -626,6 +706,15 @@ def _check_pinned(built: Mapping[str, str]) -> None:
             f"({', '.join(differing) or 'labels differ'}). git, the builder, or the "
             f"platform's line endings changed. Built: {dict(built)}"
         )
+
+
+def _commit(repo: Path, subject: str, files: Mapping[str, bytes], *, ordinal: int) -> str:
+    """Write one commit's files, commit them, and return the object name that produced."""
+    for path, content in files.items():
+        _write(repo, path, content)
+    _git(repo, "add", "--all", ordinal=ordinal)
+    _git(repo, "commit", "--quiet", "-m", subject, ordinal=ordinal)
+    return _head(repo)
 
 
 def _write(repo: Path, path: str, content: bytes) -> None:
@@ -765,6 +854,20 @@ FIXTURE_COMMITS: Final[tuple[FixtureCommit, ...]] = (
         sha="f4e2610fed21c5a1c9026f133932d22c76852dfc",
         walked=False,
         rejection=None,
+    ),
+    FixtureCommit(
+        label="broken_conftest_units",
+        subject="units: convert fahrenheit to celsius",
+        sha="e4405dc33137e09d2948aec94c2701db81f005d9",
+        walked=True,
+        rejection=GateRejection.NO_TESTS_EXECUTED,
+    ),
+    FixtureCommit(
+        label="repair_conftest_units",
+        subject="tests: stop the root conftest importing a helper nobody installs",
+        sha="727bf96b7d8ae7f03ff6958c485226d38298e89c",
+        walked=True,
+        rejection=GateRejection.NO_SOURCE_CHANGES,
     ),
 )
 

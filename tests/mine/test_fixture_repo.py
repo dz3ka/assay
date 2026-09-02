@@ -8,10 +8,10 @@ differed between them would build a different history on each, and every downstr
 would quietly become a statement about a different repository. This test is the canary for
 that, and it is meant to fail on the first Linux run rather than to be relaxed.
 
-The rest of the file pins what can be checked without running a test suite: that the seven
-``GateRejection`` reasons all have a commit in the history, that the walk yields the nine
+The rest of the file pins what can be checked without running a test suite: that the eight
+``GateRejection`` reasons all have a commit in the history, that the walk yields the eleven
 commits :data:`EXPECTED_YIELD` counts, and that the three reasons decided on the diff alone -
-no test changes, no source changes, patch did not apply - really are reached. The four that
+no test changes, no source changes, patch did not apply - really are reached. The five that
 need pytest belong to the end-to-end mining test, which runs the suite this history carries.
 """
 
@@ -75,17 +75,17 @@ def test_every_rejection_reason_has_a_commit_that_reaches_it() -> None:
 def test_the_expected_yield_is_the_arithmetic_of_the_commit_table() -> None:
     # Pinned rather than only derived: CLAUDE.md says a change in the yield is a deliberate
     # decision with an ADR behind it, so editing the table has to break something.
-    assert EXPECTED_YIELD.commits_examined == 9
-    assert EXPECTED_YIELD.candidates == 6
+    assert EXPECTED_YIELD.commits_examined == 11
+    assert EXPECTED_YIELD.candidates == 7
     assert EXPECTED_YIELD.accepted == 2
-    assert EXPECTED_YIELD.accepted + sum(EXPECTED_YIELD.rejected.values()) == 9
+    assert EXPECTED_YIELD.accepted + sum(EXPECTED_YIELD.rejected.values()) == 11
     # Every reason is reported, zeros included, so a yield is a full partition rather than a
     # sparse mapping whose missing keys a reader has to guess the meaning of.
     assert set(EXPECTED_YIELD.rejected) == set(GateRejection)
-    assert len(EXPECTED_YIELD.rejected) == 7
+    assert len(EXPECTED_YIELD.rejected) == 8
 
 
-def test_the_walk_yields_the_nine_commits_the_yield_counts(tmp_path: Path) -> None:
+def test_the_walk_yields_the_eleven_commits_the_yield_counts(tmp_path: Path) -> None:
     # `commits_examined` is the denominator of the only number this project reports, so it is
     # asserted against git rather than against the table that claims it.
     history = _history(tmp_path)
@@ -117,8 +117,9 @@ def test_the_merge_commit_is_in_the_history_but_is_never_examined(tmp_path: Path
     [
         ("fixed_field_parse", GateRejection.NO_TEST_CHANGES),
         ("deterministic_jitter", GateRejection.NO_SOURCE_CHANGES),
+        ("repair_conftest_units", GateRejection.NO_SOURCE_CHANGES),
     ],
-    ids=["a fix with no test", "a test tidy-up with no fix"],
+    ids=["a fix with no test", "a test tidy-up with no fix", "a conftest repair with no fix"],
 )
 def test_a_one_sided_commit_splits_into_one_empty_half(
     tmp_path: Path, label: str, reason: GateRejection

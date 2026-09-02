@@ -80,10 +80,14 @@ class TestStatus(StrEnum):
 class GateRejection(StrEnum):
     """Why a candidate commit did not become a task.
 
-    The set is closed at seven and every discard is counted under one of them, because yield
-    accounting is a partition of what was examined: an eighth reason introduced without a
+    The set is closed at eight and every discard is counted under one of them, because yield
+    accounting is a partition of what was examined: a ninth reason introduced without a
     place in the accounting would quietly lose commits from the denominator, and the
     denominator is the honest half of the result (CLAUDE.md, "report yield, not just totals").
+    Closed is not frozen - ``no_tests_executed`` was split out of ``still_red`` in M2 - but the
+    price of a new member is paid in full each time: a walked fixture commit that reaches it,
+    a place on one side of :data:`PRE_GATE_REJECTIONS`, and a moved expected yield with a
+    decision record behind it, which is the same bar that kept the set at seven.
 
     "Examined" means the walk's output, not the commit range. :meth:`History.commits` yields
     single-parent commits only - ``GitHistory.commits`` asks git for ``--no-merges``, and a
@@ -95,7 +99,15 @@ class GateRejection(StrEnum):
     Naming the population is the honest fix; widening the reason set is not (ADR-0015).
 
     The first three are decided before anything runs - by :mod:`assay.mine.gate`'s caller, on
-    the commit and its diff. The last four are the verdicts of the red->green gate itself.
+    the commit and its diff. The last five are the verdicts of the red->green gate itself.
+
+    ``no_tests_executed`` is the one member ADR-0017 deferred: a candidate whose test runs
+    reported no test at all, at both the red and the confirmed green end, has said nothing
+    about whether the fix works, and counting it beside candidates whose fix genuinely failed
+    made a ``still_red`` tally unreadable as evidence about a repository. M2's pinned per-task
+    images remove the environment cause the httpie run hit
+    (``docs/milestones/m1-yield-httpie.md``), which is what makes the split worth reporting
+    rather than merely worth naming.
     """
 
     NO_TEST_CHANGES = "no_test_changes"
@@ -103,6 +115,7 @@ class GateRejection(StrEnum):
     PATCH_DID_NOT_APPLY = "patch_did_not_apply"
     ALREADY_GREEN = "already_green"
     STILL_RED = "still_red"
+    NO_TESTS_EXECUTED = "no_tests_executed"
     UNSTABLE_GREEN = "unstable_green"
     RUN_TIMED_OUT = "run_timed_out"
 
@@ -208,10 +221,10 @@ class MiningYield(SchemaModel):
     # Commits the walk yielded whose workspace could not be given an environment its tests
     # could run in (:data:`assay.mine.protocols.RunnerFactory` returned ``None``). They are
     # examined - the walk did yield them - and they are not candidates, because the gate never
-    # spoke about them. Counted here, outside the seven reasons, for the reason ADR-0015 gives
+    # spoke about them. Counted here, outside the eight reasons, for the reason ADR-0015 gives
     # for merges: name the population, do not widen the reason set.
     #
-    # Rejected alternative: an eighth ``GateRejection.ENVIRONMENT_FAILED``. A rejection reason
+    # Rejected alternative: a ``GateRejection.ENVIRONMENT_FAILED`` member. A rejection reason
     # has to have a walked fixture witness (``tests/mine/test_fixture_repo.py`` asserts every
     # member is reached by a real commit), and no stub runner factory can honestly fabricate a
     # witness for a real ``uv pip install`` failure - the only true witness would put a

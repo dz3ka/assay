@@ -40,9 +40,23 @@ REQUIRED_HEADINGS = (
 )
 
 # SPEC section 8 names seven decisions; M0's implementation forced five more and M1's forced
-# seven. ADR-0020 is a process decision adopted from M1's retro. Twenty is the number a
-# reviewer should find, so a missing or unnumbered twenty-first fails here.
-EXPECTED_NUMBERS = {f"{number:04d}" for number in range(1, 21)}
+# seven. ADR-0020 is a process decision adopted from M1's retro; ADR-0021 is M2's first, forced
+# by the pinned re-mine measuring zero, ADR-0022 is what auditing 0021's cutoff found, ADR-0023
+# is the second half of the one widening 0021 allowed itself, 0025 and 0026 are what the
+# post-fix re-mine forced, 0027 is what reviewing them found (an image's address claims a commit,
+# so its build context is checked against that claim), 0028 is how a cgroup kill scores, 0029 is
+# where a selector no runner would accept is decided, 0030 is the exit-code band 0028 carves that
+# kill out of, 0031 is the wrap's audit of 0028, which argued from a denominator this codebase
+# does not have, and 0032 is that same wrap at the other end of the same denominator: the rule
+# deciding which of a commit's changed paths are its test half admits more than "test-anchored
+# fix", so the yield is made to say what it counts rather than the rule narrowed on no
+# measurement. 0024 is the one number the directory did not take in order: it was held
+# vacant while two sandbox modules cited a decision M2 still owed, and written in that
+# milestone's wrap once the code it describes had settled.
+#
+# The set is contiguous, and that is the assertion. Thirty-two files is the number a reviewer
+# should find, numbered 0001 through 0032 with nothing missing.
+EXPECTED_NUMBERS = {f"{number:04d}" for number in range(1, 33)}
 
 # A markdown link target that names an ADR file: `[0005](0005-no-winner-....md)`.
 _ADR_LINK = re.compile(r"\]\((\d{4}-[a-z0-9-]+\.md)\)")
@@ -61,7 +75,9 @@ def indexed_filenames() -> set[str]:
     return set(_ADR_LINK.findall(table))
 
 
-def test_the_decision_record_is_exactly_adrs_0001_through_0019() -> None:
+def test_the_decision_record_is_exactly_the_numbers_expected() -> None:
+    # With no gaps: a number skipped is a decision nobody remembers deciding to skip, and a
+    # number added out of band is a record the index below has never heard of.
     assert {path.name[:4] for path in ADRS} == EXPECTED_NUMBERS
 
 

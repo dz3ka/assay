@@ -109,7 +109,7 @@ def test_an_unbuilt_command_fails_and_names_its_milestone(
     # diagnostic it might parse as one.
     assert out == ""
     assert f"assay {command}" in err
-    assert "M1" in err
+    assert "M2" in err
     # The schedule, not the wording: the user should read when the work lands.
     assert "planned:" in err
 

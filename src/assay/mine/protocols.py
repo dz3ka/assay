@@ -88,5 +88,5 @@ class TestRunner(Protocol):
 #
 # Deliberately the same shape as ``History.apply_patch``'s False above: an ordinary, countable
 # outcome rather than an exception. It is counted as ``MiningYield.unprovisioned`` - outside
-# the seven rejection reasons, because the gate never spoke about it.
+# the eight rejection reasons, because the gate never spoke about it.
 type RunnerFactory = Callable[[Path], TestRunner | None]

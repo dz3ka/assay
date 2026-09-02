@@ -71,8 +71,8 @@ from assay.results import read_result_set
 from assay.suite import SuiteBody, Task, load_suite, save_suite
 
 # The milestone this build is. Quoted in every "not implemented" message, so one edit moves
-# the whole surface forward when M1 lands.
-MILESTONE = "M1"
+# the whole surface forward when M2 lands.
+MILESTONE = "M2"
 
 # Where each unbuilt command is scheduled (SPEC §7). Only `run` is left: it needs adapters and
 # n-trial execution, which is M3 - not M2, which builds the sandbox and scoring underneath it
@@ -143,7 +143,8 @@ HOST_EXECUTION_NOTICE = (
     "assay: this command runs the target repository's own build and test suite on this "
     "machine, outside a sandbox - provisioning a workspace executes that repository's "
     "packaging hooks as you, and its tests then run the same way. Point it only at a "
-    "repository you would already run locally. Sandboxed execution lands in M2 (SPEC 5.2)."
+    "repository you would already run locally. Sandboxed execution covers evaluation "
+    "trials, not mining (SPEC 5.2)."
 )
 
 # What a suite file records as its maker, read from the installed distribution rather than

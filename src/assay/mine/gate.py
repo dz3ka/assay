@@ -74,7 +74,7 @@ def decide_gate(red: TestReport, greens: Sequence[TestReport]) -> GateOutcome:
     Raises:
         ValueError: if ``greens`` does not hold exactly :data:`GREEN_CONFIRMATION_RUNS` runs.
             That is a caller that has not gathered the evidence this rule is defined over, not
-            a property of the commit, so it is not one of the seven countable rejections.
+            a property of the commit, so it is not one of the eight countable rejections.
     """
     if len(greens) != GREEN_CONFIRMATION_RUNS:
         raise ValueError(
@@ -89,6 +89,19 @@ def decide_gate(red: TestReport, greens: Sequence[TestReport]) -> GateOutcome:
         return _rejected(GateRejection.UNSTABLE_GREEN)
     confirmed = greens[0]
     if not _is_green(confirmed):
+        # Two opposite claims used to share this branch (ADR-0017). A candidate whose runs
+        # reported no test at all has demonstrated nothing about the fix; a candidate whose
+        # tests ran and failed has demonstrated that the fix did not work. Only the second is
+        # ``still_red``, and separating them is what makes a ``still_red`` tally evidence
+        # about a repository rather than about the environment the harness built for it.
+        #
+        # Both ends have to be silent, not either: a red that ran nothing followed by a
+        # confirmation run that ran and failed is an ordinary ``still_red`` - the tests exist
+        # and they fail - and a red that named a failing test proves the candidate *was*
+        # measurable at the parent, so a confirmation run that then goes quiet is a broken run
+        # rather than a candidate nothing could ever have been learned from.
+        if _ran_nothing(red) and _ran_nothing(confirmed):
+            return _rejected(GateRejection.NO_TESTS_EXECUTED)
         return _rejected(GateRejection.STILL_RED)
 
     # The confirmation runs agree and are green, so they enumerate the tests that exist after
@@ -151,7 +164,27 @@ def _shows_failure(red: TestReport) -> bool:
         return True
     if red.uncollectable:
         return True
-    return red.exit_code in _NOTHING_RAN and not red.statuses
+    return _ran_nothing(red)
+
+
+def _ran_nothing(report: TestReport) -> bool:
+    """Whether the run executed no test at all and named nothing it could not run.
+
+    Exit 4 or 5 (:data:`_NOTHING_RAN`) with no statuses *and* an empty ``uncollectable``:
+    pytest refused the selection or found nothing in it, and never got as far as a module it
+    could not import. The ``uncollectable`` clause is what separates this from a collect
+    error, which is evidence - the httpie run measured in
+    ``docs/milestones/m1-yield-httpie.md`` was a usage error with an **empty** uncollectable
+    set, and describing that as a collect error would be a claim about a different failure
+    (ADR-0017).
+
+    Read twice, for opposite purposes. In a red run, silence is evidence *of* red: the tests
+    the commit adds do not exist at the parent (:func:`_shows_failure`, whose earlier branches
+    mean the ``uncollectable`` clause is already satisfied where it is called from). In a
+    confirmation run, the same silence is the absence of evidence, and a candidate silent at
+    both ends is ``no_tests_executed`` rather than ``still_red``.
+    """
+    return report.exit_code in _NOTHING_RAN and not report.statuses and not report.uncollectable
 
 
 def _is_green(green: TestReport) -> bool:
