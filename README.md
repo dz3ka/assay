@@ -12,7 +12,7 @@ The point is not the score. The point is that the score is defensible: a task on
 suite if its tests provably fail before the fix and provably pass after it, and the report
 refuses to name a winner it cannot separate.
 
-**Status: M2 complete.** M0's schemas, adapter protocol, redaction boundary and report pipeline
+**Status: M4 complete.** M0's schemas, adapter protocol, redaction boundary and report pipeline
 landed; M1's `assay mine` and `assay validate` run the red→green gate over a real local clone —
 the walk, the test/source split, the proof that the tests fail at the parent and pass once the
 commit's own diff is applied, and the yield accounting for everything discarded on the way. M2
@@ -23,8 +23,18 @@ oracles are now measured rather than asserted — the ground-truth adapter score
 adapter 0.0 over every task mined from the fixture repository, with mining on the host and each
 trial in a container. Pinning the environment in the task image also paid ADR-0017's debt:
 `no_tests_executed` is split out of `still_red`, so "the fix did not work" and "no test ran" have
-stopped sharing a tally. `assay run` is still the only command that exits `3` — the end-to-end
-run, n trials per task per tool, is M3.
+stopped sharing a tally. M3 builds `assay run` on top of that: n trials per task per tool, pass@1
+and pass^n, real Wilson bands, and a renderer that declines to name a winner when they overlap.
+Every command is now built. M3's end-to-end evidence is an oracle run, and
+[`docs/milestones/m3-oracle-run.md`](docs/milestones/m3-oracle-run.md) says exactly what that does
+and does not establish. M4 adds the two statistics a comparison needs and the arithmetic a buyer
+needs: a seeded percentile bootstrap band on pass@1, an exact McNemar test over the tasks two tools
+disagree on — printed beside the verdict and never allowed to move it — and cost per solved task,
+priced from rates you supply at report time, because Assay stores none. **No model has yet been
+called, in any milestone, including this one.** M4 is machinery, checked against hand-computed
+fixtures and the two oracles' free results;
+[`docs/milestones/m4-paired-statistics-and-cost.md`](docs/milestones/m4-paired-statistics-and-cost.md)
+says at length what that leaves unmeasured.
 
 Mining has been run by hand over a real repository twice, and the second run is the one to read.
 M1 walked [743 commits of httpie](docs/milestones/m1-yield-httpie.md) for **0 valid tasks**. M2's
@@ -40,7 +50,7 @@ Assay, counted and reported separately and never folded into the rejection set
 dies in about a second, and 125 of the 127 commits that got past the pre-gate split never
 reached a container at all. Two things are still true and worth reading twice: the container
 holds *trials*, so a mining walk runs the target repository's build and test suite **on this
-machine, outside a sandbox** — and no interval printed today is a measured one.
+machine, outside a sandbox** — and no interval printed today describes a tool that called a model.
 
 ## What it does today
 
@@ -109,14 +119,22 @@ fresh per render and never persisted
   this tool run here* — DNS, egress, proxies, TLS interception. Assay answers *is it any
   good here*. Portcall goes ahead of the deployment; Assay comes after it. They share no
   code.
-- **The end-to-end run is not built.** `assay run` exits `3` with a message naming the milestone
-  that builds it: there is no model call, no n-trial loop and no statistics yet, so no real tool
-  has been scored against a mined task. What is built underneath it is the sandbox and tier-1
-  executable scoring, exercised today by the two oracles rather than by a tool. Mining and
-  validation stay narrow: one repository family, test-anchored commits, and a walk that runs on
-  the host rather than in a container. The intervals `assay report` prints are placeholders —
-  pass^n ±0.25, clamped — and all three renderers say so verbatim, above the fold, on every run.
-  Real Wilson intervals land in M4, and deleting the stub is a follow-up pinned in ADR-0005.
+- **No real tool has been scored yet.** `assay run` is built and exercised end to end, but only by
+  the two oracles: ground truth scores 1.0 and null 0.0 over a mined suite, which brackets every
+  real result without being one. The naive baseline and the agentic Claude Code adapter are built,
+  unit-tested on fakes and container-tested, and **have never called a model** — so this repository
+  contains no naive-vs-agentic comparison and no evidence that either adapter can solve anything.
+  **M4 did not change that.** This section used to say the first live run was M4's; M4 calls no
+  model and spends nothing, so the promise is withdrawn here rather than quietly deleted
+  ([ADR-0042](docs/adr/0042-the-readme-withdraws-the-promise-of-a-live-run.md)), and no milestone
+  owns the live run. Mining and validation stay narrow: one repository family, test-anchored
+  commits, and a walk that runs on the host rather than in a container. The interval
+  `assay report` prints around pass^n is a real Wilson band over tasks; M4 gave pass@1 its own
+  by a different method, a seeded percentile bootstrap over tasks, and the report names both
+  methods rather than printing two bands as though one procedure produced them. M4's paired
+  significance test — exact McNemar over the tasks two tools disagree on — landed the same way.
+  Both were validated against hand-computed fixtures and the two oracles' free results, and
+  neither has ever been computed over a run that called a model.
 
 ## Trust properties
 
@@ -169,15 +187,30 @@ uv run --frozen assay report --results tests/fixtures/results_overlapping.json -
 uv run --frozen assay report --results tests/fixtures/results_overlapping.json --format html
 ```
 
-The document goes to stdout and the placeholder-interval admission goes to stderr, so
-`--format json > out.json` leaves a file a consumer can parse *and* a human who still saw
-the admission. That fixture is the overlapping case, so its comparison reads:
+The document goes to stdout and a successful run says nothing on stderr, so
+`--format json > out.json` leaves a file a consumer can parse. That fixture is the
+overlapping case, so its comparison reads:
 
 ```
   alpha vs beta: No winner: the pass^n confidence intervals overlap.
 ```
 
 `tests/fixtures/results_disjoint.json` is the separable case, for the other branch.
+
+Score a mined suite, five trials per task per adapter, and report on what it wrote:
+
+```bash
+uv run --frozen assay run --suite suite.json --repo <clone> --out results.json \
+  --adapter ground-truth --adapter null
+uv run --frozen assay report --results results.json
+```
+
+Every trial happens in a container: the tool works in one and the tests are run in a second with
+no network interface at all, so `assay run` needs a Docker daemon where `assay mine` does not.
+Naming a real tool — `--adapter agentic` — also requires `--adapter naive`, because the report
+has to carry the one-raw-model-call baseline the tool is meant to beat, and both read the model
+API key from `ASSAY_MODEL_API_KEY` in the environment. It is never a flag: a command line is
+readable by every process on the machine.
 
 ### Exit codes
 
@@ -186,7 +219,7 @@ the admission. That fixture is the overlapping case, so its comparison reads:
 | `0` | The command ran. |
 | `1` | Assay refused: unreadable input, a schema version it does not support, a suite whose hash does not match its body, or a suite that no longer revalidates. |
 | `2` | Bad invocation — argparse rejected the command line. |
-| `3` | The command exists in the surface but is not implemented in this milestone. Only `assay run` reaches it now. |
+| `3` | The command exists in the surface but is not implemented in this milestone. No command reaches it now: all four are built. |
 
 `3` is its own code so a caller can tell "this milestone has not built that yet" from "that
 went wrong", and neither of them reads as success.

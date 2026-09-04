@@ -23,7 +23,6 @@ from assay.suite import Task
 # machinery, so that neither bracket can be broken by a change made for the other.
 _NS_PER_MS = 1_000_000
 _NO_COST = Decimal("0.000000")
-_FIRST_TRIAL = 0
 
 # Not a placeholder: an empty diff is this adapter's whole output, and the value
 # :class:`assay.results.Attempt` documents as the floor.
@@ -36,13 +35,14 @@ class NullAdapter:
     name: str = "null"
     version: str = "0.1.0"
 
-    def run(self, task: Task, workspace: Path, budget: Budget) -> Attempt:
+    def run(self, task: Task, workspace: Path, budget: Budget, *, trial_index: int) -> Attempt:
         """Workspace is a repo checked out at the task's base state, tests already
         failing. Return the diff produced, plus token and latency accounting.
 
         Neither ``workspace`` nor ``budget`` is touched: there is nothing to write and
-        nothing to cap. Only ``task`` is read, and only to say which task this attempt
-        belongs to - a result is an attribution claim before it is a measurement (SPEC §5.5).
+        nothing to cap. ``task`` and ``trial_index`` are read, and only to say which task and
+        which of its trials this attempt belongs to - a result is an attribution claim before
+        it is a measurement (SPEC §5.5).
         """
         started_ns = monotonic_ns()
         return Attempt(
@@ -50,7 +50,7 @@ class NullAdapter:
             adapter_name=self.name,
             adapter_version=self.version,
             task_id=task.task_id,
-            trial_index=_FIRST_TRIAL,
+            trial_index=trial_index,
             diff=_NO_DIFF,
             input_tokens=0,
             output_tokens=0,

@@ -177,6 +177,270 @@
         "error": null
       },
       "outcome": "passed"
+    },
+    {
+      "schema_version": 1,
+      "task_id": "fixture-repo.0003",
+      "adapter_name": "null",
+      "trial_index": 0,
+      "attempt": {
+        "schema_version": 1,
+        "adapter_name": "null",
+        "adapter_version": "0.1.0",
+        "task_id": "fixture-repo.0003",
+        "trial_index": 0,
+        "diff": "",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "wall_clock_ms": 3,
+        "tool_calls": 0,
+        "retries": 0,
+        "cost_usd": "0.000000",
+        "error": null
+      },
+      "outcome": "failed"
+    },
+    {
+      "schema_version": 1,
+      "task_id": "fixture-repo.0003",
+      "adapter_name": "ground-truth",
+      "trial_index": 0,
+      "attempt": {
+        "schema_version": 1,
+        "adapter_name": "ground-truth",
+        "adapter_version": "0.1.0",
+        "task_id": "fixture-repo.0003",
+        "trial_index": 0,
+        "diff": "--- a/src/fixture_repo/parser.py\n+++ b/src/fixture_repo/parser.py\n@@ -1,4 +1,6 @@\n def parse(text):\n+    if not text:\n+        return []\n     return [tuple(line.split(\"=\", 1)) for line in text.splitlines()]\n",
+        "input_tokens": 1024,
+        "output_tokens": 96,
+        "wall_clock_ms": 8421,
+        "tool_calls": 3,
+        "retries": 0,
+        "cost_usd": "0.001000",
+        "error": null
+      },
+      "outcome": "passed"
+    },
+    {
+      "schema_version": 1,
+      "task_id": "fixture-repo.0003",
+      "adapter_name": "null",
+      "trial_index": 1,
+      "attempt": {
+        "schema_version": 1,
+        "adapter_name": "null",
+        "adapter_version": "0.1.0",
+        "task_id": "fixture-repo.0003",
+        "trial_index": 1,
+        "diff": "",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "wall_clock_ms": 3,
+        "tool_calls": 0,
+        "retries": 0,
+        "cost_usd": "0.000000",
+        "error": null
+      },
+      "outcome": "failed"
+    },
+    {
+      "schema_version": 1,
+      "task_id": "fixture-repo.0003",
+      "adapter_name": "ground-truth",
+      "trial_index": 1,
+      "attempt": {
+        "schema_version": 1,
+        "adapter_name": "ground-truth",
+        "adapter_version": "0.1.0",
+        "task_id": "fixture-repo.0003",
+        "trial_index": 1,
+        "diff": "--- a/src/fixture_repo/parser.py\n+++ b/src/fixture_repo/parser.py\n@@ -1,4 +1,6 @@\n def parse(text):\n+    if not text:\n+        return []\n     return [tuple(line.split(\"=\", 1)) for line in text.splitlines()]\n",
+        "input_tokens": 1024,
+        "output_tokens": 96,
+        "wall_clock_ms": 8421,
+        "tool_calls": 3,
+        "retries": 0,
+        "cost_usd": "0.001000",
+        "error": null
+      },
+      "outcome": "passed"
+    },
+    {
+      "schema_version": 1,
+      "task_id": "fixture-repo.0004",
+      "adapter_name": "null",
+      "trial_index": 0,
+      "attempt": {
+        "schema_version": 1,
+        "adapter_name": "null",
+        "adapter_version": "0.1.0",
+        "task_id": "fixture-repo.0004",
+        "trial_index": 0,
+        "diff": "",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "wall_clock_ms": 3,
+        "tool_calls": 0,
+        "retries": 0,
+        "cost_usd": "0.000000",
+        "error": null
+      },
+      "outcome": "failed"
+    },
+    {
+      "schema_version": 1,
+      "task_id": "fixture-repo.0004",
+      "adapter_name": "ground-truth",
+      "trial_index": 0,
+      "attempt": {
+        "schema_version": 1,
+        "adapter_name": "ground-truth",
+        "adapter_version": "0.1.0",
+        "task_id": "fixture-repo.0004",
+        "trial_index": 0,
+        "diff": "--- a/src/fixture_repo/parser.py\n+++ b/src/fixture_repo/parser.py\n@@ -1,4 +1,6 @@\n def parse(text):\n+    if not text:\n+        return []\n     return [tuple(line.split(\"=\", 1)) for line in text.splitlines()]\n",
+        "input_tokens": 1024,
+        "output_tokens": 96,
+        "wall_clock_ms": 8421,
+        "tool_calls": 3,
+        "retries": 0,
+        "cost_usd": "0.001000",
+        "error": null
+      },
+      "outcome": "passed"
+    },
+    {
+      "schema_version": 1,
+      "task_id": "fixture-repo.0004",
+      "adapter_name": "null",
+      "trial_index": 1,
+      "attempt": {
+        "schema_version": 1,
+        "adapter_name": "null",
+        "adapter_version": "0.1.0",
+        "task_id": "fixture-repo.0004",
+        "trial_index": 1,
+        "diff": "",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "wall_clock_ms": 3,
+        "tool_calls": 0,
+        "retries": 0,
+        "cost_usd": "0.000000",
+        "error": null
+      },
+      "outcome": "failed"
+    },
+    {
+      "schema_version": 1,
+      "task_id": "fixture-repo.0004",
+      "adapter_name": "ground-truth",
+      "trial_index": 1,
+      "attempt": {
+        "schema_version": 1,
+        "adapter_name": "ground-truth",
+        "adapter_version": "0.1.0",
+        "task_id": "fixture-repo.0004",
+        "trial_index": 1,
+        "diff": "--- a/src/fixture_repo/parser.py\n+++ b/src/fixture_repo/parser.py\n@@ -1,4 +1,6 @@\n def parse(text):\n+    if not text:\n+        return []\n     return [tuple(line.split(\"=\", 1)) for line in text.splitlines()]\n",
+        "input_tokens": 1024,
+        "output_tokens": 96,
+        "wall_clock_ms": 8421,
+        "tool_calls": 3,
+        "retries": 0,
+        "cost_usd": "0.001000",
+        "error": null
+      },
+      "outcome": "passed"
+    },
+    {
+      "schema_version": 1,
+      "task_id": "fixture-repo.0005",
+      "adapter_name": "null",
+      "trial_index": 0,
+      "attempt": {
+        "schema_version": 1,
+        "adapter_name": "null",
+        "adapter_version": "0.1.0",
+        "task_id": "fixture-repo.0005",
+        "trial_index": 0,
+        "diff": "",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "wall_clock_ms": 3,
+        "tool_calls": 0,
+        "retries": 0,
+        "cost_usd": "0.000000",
+        "error": null
+      },
+      "outcome": "failed"
+    },
+    {
+      "schema_version": 1,
+      "task_id": "fixture-repo.0005",
+      "adapter_name": "ground-truth",
+      "trial_index": 0,
+      "attempt": {
+        "schema_version": 1,
+        "adapter_name": "ground-truth",
+        "adapter_version": "0.1.0",
+        "task_id": "fixture-repo.0005",
+        "trial_index": 0,
+        "diff": "--- a/src/fixture_repo/parser.py\n+++ b/src/fixture_repo/parser.py\n@@ -1,4 +1,6 @@\n def parse(text):\n+    if not text:\n+        return []\n     return [tuple(line.split(\"=\", 1)) for line in text.splitlines()]\n",
+        "input_tokens": 1024,
+        "output_tokens": 96,
+        "wall_clock_ms": 8421,
+        "tool_calls": 3,
+        "retries": 0,
+        "cost_usd": "0.001000",
+        "error": null
+      },
+      "outcome": "passed"
+    },
+    {
+      "schema_version": 1,
+      "task_id": "fixture-repo.0005",
+      "adapter_name": "null",
+      "trial_index": 1,
+      "attempt": {
+        "schema_version": 1,
+        "adapter_name": "null",
+        "adapter_version": "0.1.0",
+        "task_id": "fixture-repo.0005",
+        "trial_index": 1,
+        "diff": "",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "wall_clock_ms": 3,
+        "tool_calls": 0,
+        "retries": 0,
+        "cost_usd": "0.000000",
+        "error": null
+      },
+      "outcome": "failed"
+    },
+    {
+      "schema_version": 1,
+      "task_id": "fixture-repo.0005",
+      "adapter_name": "ground-truth",
+      "trial_index": 1,
+      "attempt": {
+        "schema_version": 1,
+        "adapter_name": "ground-truth",
+        "adapter_version": "0.1.0",
+        "task_id": "fixture-repo.0005",
+        "trial_index": 1,
+        "diff": "--- a/src/fixture_repo/parser.py\n+++ b/src/fixture_repo/parser.py\n@@ -1,4 +1,6 @@\n def parse(text):\n+    if not text:\n+        return []\n     return [tuple(line.split(\"=\", 1)) for line in text.splitlines()]\n",
+        "input_tokens": 1024,
+        "output_tokens": 96,
+        "wall_clock_ms": 8421,
+        "tool_calls": 3,
+        "retries": 0,
+        "cost_usd": "0.001000",
+        "error": null
+      },
+      "outcome": "passed"
     }
   ]
 }

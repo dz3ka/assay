@@ -21,6 +21,11 @@ FIXTURES = Path(__file__).parent.parent / "fixtures"
 _: Adapter = NullAdapter()
 
 
+# The trial these tests drive. Deliberately not 0: an adapter that stamped the first trial's
+# number whatever it was handed would pass against 0 and only against 0.
+_TRIAL_INDEX = 3
+
+
 def _task() -> Task:
     document: dict[str, object] = json.loads(
         (FIXTURES / "task_minimal.json").read_text(encoding="utf-8")
@@ -39,7 +44,7 @@ def _budget() -> Budget:
 
 
 def _run(workspace: Path) -> Attempt:
-    return NullAdapter().run(_task(), workspace, _budget())
+    return NullAdapter().run(_task(), workspace, _budget(), trial_index=_TRIAL_INDEX)
 
 
 def test_the_diff_returned_is_empty(tmp_path: Path) -> None:
@@ -60,12 +65,15 @@ def test_the_empty_diff_is_not_reported_as_an_error(tmp_path: Path) -> None:
 def test_the_attempt_names_the_trial_it_came_from(tmp_path: Path) -> None:
     adapter = NullAdapter()
 
-    attempt = adapter.run(_task(), tmp_path, _budget())
+    attempt = adapter.run(_task(), tmp_path, _budget(), trial_index=_TRIAL_INDEX)
 
     assert attempt.task_id == _task().task_id
     assert attempt.adapter_name == adapter.name == "null"
     assert attempt.adapter_version == adapter.version
     assert attempt.schema_version == 1
+    # The trial number is the harness's, not the adapter's: it is recorded exactly as it was
+    # handed over, which is what lets n attempts at one task be told apart (ADR-0033).
+    assert attempt.trial_index == _TRIAL_INDEX
 
 
 def test_the_attempt_can_be_wrapped_in_a_result_without_contradiction(tmp_path: Path) -> None:
@@ -75,7 +83,7 @@ def test_the_attempt_can_be_wrapped_in_a_result_without_contradiction(tmp_path: 
         schema_version=1,
         task_id=_task().task_id,
         adapter_name="null",
-        trial_index=attempt.trial_index,
+        trial_index=_TRIAL_INDEX,
         attempt=attempt,
         outcome=Outcome.FAILED,
     )

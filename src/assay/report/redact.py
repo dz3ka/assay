@@ -7,14 +7,17 @@ and returns a whole one, with no per-field opt-out and no ``--no-redact`` flag i
 opt-out would make redaction a habit callers remember instead of a property the pipeline has,
 and the first renderer written in a hurry is where a private path would escape.
 
-Three fields are deliberately *not* hashed, because hashing them would destroy the document
-rather than protect the repository. ``suite_hash`` is a digest of the task set, not of the
-code, and it is what makes a result reproducible and attributable (SPEC §5.5). The tool names
-are the finding itself: a report shared with a vendor has to say which tool is theirs. The
-enum members are Assay's own vocabulary. Everything else in a report comes from the repository
-and gets a token. The totality test in ``tests/report/test_redaction.py`` walks the serialised
-document instead of a field list, so a provenance field added by M1's miner fails the suite
-until it is classified here.
+Four kinds of field are deliberately *not* hashed, because hashing them would destroy the
+document rather than protect the repository. ``suite_hash`` is a digest of the task set, not
+of the code, and it is what makes a result reproducible and attributable (SPEC §5.5). The tool
+names are the finding itself: a report shared with a vendor has to say which tool is theirs.
+The enum members are Assay's own vocabulary. And ``prices_source``, with the rates and dollars
+beside it, is the reader's own text and the reader's own arithmetic - it never came from the
+repository under evaluation, and a hashed provenance would leave the report's money
+unattributable, which is the one thing SPEC §5.5 asks of it. Everything else in a report comes
+from the repository and gets a token. The totality test in ``tests/report/test_redaction.py``
+walks the serialised document instead of a field list, so a provenance field added by M1's
+miner fails the suite until it is classified here.
 
 The salt lives in a :class:`RedactionPolicy` and never enters a report. Without it a recipient
 who guessed a path could confirm the guess by recomputing the hash, and two reports from the
@@ -115,15 +118,16 @@ def redact(report: Report, policy: RedactionPolicy) -> Report:
     added to :class:`~assay.report.Report` in a later milestone does not silently pass through
     unredacted - it fails to compile here first.
 
-    ``tools``, ``comparisons`` and ``intervals_are_placeholders`` are carried across
-    unchanged: they hold tool names, scores, intervals and a boolean, which are what the
-    report is for - and a bool is not repo-derived text, so carrying it is not a redaction
-    hole. See this module's docstring for why that is a decision rather than an omission.
+    ``tools``, ``comparisons``, ``costs`` and ``prices_source`` are carried across unchanged:
+    they hold tool names, scores, intervals, and the money the reader priced the run with,
+    which are what the report is for. See this module's docstring for why that is a decision
+    rather than an omission.
     """
     return Report(
         suite_hash=report.suite_hash,
-        intervals_are_placeholders=report.intervals_are_placeholders,
         tools=report.tools,
         comparisons=report.comparisons,
+        costs=report.costs,
+        prices_source=report.prices_source,
         tasks=tuple(_redact_task_line(line, policy) for line in report.tasks),
     )

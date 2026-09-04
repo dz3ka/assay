@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from assay.report import (
     Comparison,
     Interval,
+    PairedTest,
     Report,
     TaskLine,
     ToolSummary,
@@ -24,6 +25,7 @@ from assay.report import (
     VerdictReason,
     build_report,
     decide_verdict,
+    format_paired,
     format_verdict,
     overlaps,
 )
@@ -38,6 +40,7 @@ def _summary(tool: str, low: float, high: float) -> ToolSummary:
         tool=tool,
         trials=5,
         pass_at_1=high,
+        pass_at_1_interval=Interval(low=high, high=high),
         pass_caret_n=low,
         pass_caret_n_interval=Interval(low=low, high=high),
     )
@@ -175,6 +178,50 @@ def test_every_verdict_reason_formats_to_stable_prose(reason: VerdictReason) -> 
     assert ("ahead" in rendered) is decisive
 
 
+def _paired_comparison(paired: PairedTest) -> Comparison:
+    """A pairing whose verdict is a refusal, so the paired sentence is what varies."""
+    return Comparison(
+        tool_a="alpha",
+        tool_b="beta",
+        verdict=Verdict(winner=None, reason=VerdictReason.INTERVALS_OVERLAP),
+        paired=paired,
+    )
+
+
+def test_a_paired_test_over_no_shared_tasks_says_there_was_no_comparison() -> None:
+    # Two tools run on different task sets are not a paired experiment at all, and the p of 1.0
+    # the test returns for that case would read as "no difference found" if it were printed as
+    # a number. It is not a finding; it is the absence of one.
+    paired = PairedTest(tasks_compared=0, only_tool_a=0, only_tool_b=0, p_value=1.0)
+
+    assert format_paired(_paired_comparison(paired)) == "no shared tasks; no paired comparison"
+
+
+def test_a_paired_test_with_nothing_discordant_says_there_was_nothing_to_test() -> None:
+    # Every task went the same way for both tools, so McNemar was handed no evidence. Saying so
+    # is different from printing p = 1.0000 beside two tools that were never told apart.
+    paired = PairedTest(tasks_compared=5, only_tool_a=0, only_tool_b=0, p_value=1.0)
+
+    sentence = format_paired(_paired_comparison(paired))
+
+    assert sentence == "the tools solved the same tasks; nothing to test"
+
+
+def test_a_paired_sentence_reports_the_p_and_refuses_to_rank_on_it() -> None:
+    # The decision ADR-0044 records, in the one place a reader meets it. A significant p beside
+    # "No winner" reads as either coyness or a licence unless the sentence says which, and it
+    # says: this measures whether they differ, and the pass^n intervals do the ranking.
+    paired = PairedTest(tasks_compared=10, only_tool_a=6, only_tool_b=0, p_value=0.03125)
+
+    sentence = format_paired(_paired_comparison(paired))
+
+    assert "alpha solved 6 tasks beta did not" in sentence
+    assert "beta solved 0 alpha did not" in sentence
+    assert "exact McNemar p = 0.0312" in sentence
+    assert "ranking is the pass^n intervals' decision alone." in sentence
+    assert "Winner" not in sentence
+
+
 def test_the_no_winner_sentence_says_why_there_is_none() -> None:
     rendered = format_verdict(Verdict(winner=None, reason=VerdictReason.INTERVALS_OVERLAP))
 
@@ -202,6 +249,8 @@ def test_a_report_pairs_every_tool_once_and_carries_a_line_per_result() -> None:
             tool_a="ground-truth",
             tool_b="null",
             verdict=Verdict(winner="ground-truth", reason=VerdictReason.INTERVALS_DISJOINT),
+            # One shared task, which ground-truth solved and null did not: 2 * C(1,0)/2 = 1.0.
+            paired=PairedTest(tasks_compared=1, only_tool_a=1, only_tool_b=0, p_value=1.0),
         ),
     )
     assert report.tasks == (

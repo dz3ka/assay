@@ -15,17 +15,21 @@ renderer that never calls :func:`redact` at all.
 
 import re
 from collections.abc import Iterator
+from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
 
 from assay.report import (
     Comparison,
+    CostBasis,
     Interval,
+    PairedTest,
     Redacted,
     RedactionPolicy,
     Report,
     TaskLine,
+    ToolCost,
     ToolSummary,
     Verdict,
     VerdictReason,
@@ -43,6 +47,11 @@ RAW_PATH = "/home/alice/acquisition-target/src/pricing/margin.py"
 RAW_SUBJECT = "fix margin rounding for the Northwind contract"
 RAW_TASK_ID = "pricing-margin-rounding-4f21a9"
 
+# The reader's own words about the reader's own prices. Not repo-derived, and deliberately not
+# a real rate card: no price anybody could mistake for a maintained figure is written down in
+# this repository (ADR-0046).
+PRICES_SOURCE = "an invented rate card, quoted here so the report can be attributed"
+
 
 def _policy(fill: int) -> RedactionPolicy:
     """A policy whose salt is fixed by the test, so a token can be compared across calls."""
@@ -54,6 +63,7 @@ def _summary(tool: str, low: float, high: float) -> ToolSummary:
         tool=tool,
         trials=5,
         pass_at_1=high,
+        pass_at_1_interval=Interval(low=high, high=high),
         pass_caret_n=low,
         pass_caret_n_interval=Interval(low=low, high=high),
     )
@@ -69,15 +79,40 @@ def _populated_report() -> Report:
     tools = (_summary("ground-truth", 0.9, 1.0), _summary("null", 0.0, 0.1))
     return Report(
         suite_hash=SUITE_HASH,
-        intervals_are_placeholders=True,
         tools=tools,
         comparisons=(
             Comparison(
                 tool_a="ground-truth",
                 tool_b="null",
                 verdict=Verdict(winner="ground-truth", reason=VerdictReason.INTERVALS_DISJOINT),
+                paired=PairedTest(tasks_compared=2, only_tool_a=2, only_tool_b=0, p_value=0.5),
             ),
         ),
+        costs=(
+            ToolCost(
+                tool="ground-truth",
+                input_tokens=2_000_000,
+                output_tokens=1_000_000,
+                solved_tasks=2,
+                input_usd_per_mtok=Decimal("100.000000"),
+                output_usd_per_mtok=Decimal("200.000000"),
+                total_usd=Decimal("400.000000"),
+                usd_per_solved_task=Decimal("200.000000"),
+                basis=CostBasis.PRICED,
+            ),
+            ToolCost(
+                tool="null",
+                input_tokens=0,
+                output_tokens=0,
+                solved_tasks=0,
+                input_usd_per_mtok=Decimal("100.000000"),
+                output_usd_per_mtok=Decimal("200.000000"),
+                total_usd=None,
+                usd_per_solved_task=None,
+                basis=CostBasis.NO_TOKENS_RECORDED,
+            ),
+        ),
+        prices_source=PRICES_SOURCE,
         tasks=(
             TaskLine(
                 task_id=RAW_TASK_ID,
@@ -100,18 +135,36 @@ def _publishable(report: Report) -> set[str]:
 
     The suite digest is the reproducibility anchor (SPEC §5.5) and is already a hash of the
     task set, not of the code. The tool names are the finding itself - a report shared with a
-    vendor has to say which tool is theirs. The enum members are Assay's own vocabulary.
-    Nothing else in the document comes from anywhere but the repository under evaluation.
+    vendor has to say which tool is theirs. The enum members are Assay's own vocabulary. The
+    money and the source it was priced from came from the reader's own command line, and a
+    hashed provenance would leave the dollars unattributable, which is the one thing SPEC §5.5
+    asks of them. Nothing else in the document comes from anywhere but the repository under
+    evaluation.
     """
     winners = {c.verdict.winner for c in report.comparisons}
+    amounts = {
+        str(amount)
+        for cost in report.costs
+        for amount in (
+            cost.input_usd_per_mtok,
+            cost.output_usd_per_mtok,
+            cost.total_usd,
+            cost.usd_per_solved_task,
+        )
+        if amount is not None
+    }
     return (
         {report.suite_hash}
         | {s.tool for s in report.tools}
         | {c.tool_a for c in report.comparisons}
         | {c.tool_b for c in report.comparisons}
         | {w for w in winners if w is not None}
+        | {cost.tool for cost in report.costs}
+        | amounts
+        | ({report.prices_source} if report.prices_source is not None else set())
         | {o.value for o in Outcome}
         | {r.value for r in VerdictReason}
+        | {b.value for b in CostBasis}
     )
 
 
@@ -266,6 +319,18 @@ def test_the_findings_survive_redaction_unchanged() -> None:
     assert redacted.tools == report.tools
     assert redacted.comparisons == report.comparisons
     assert [line.outcome for line in redacted.tasks] == [line.outcome for line in report.tasks]
+
+
+def test_the_money_and_its_provenance_survive_redaction_verbatim() -> None:
+    # The dollars are the reader's own arithmetic over the reader's own rates, and the source
+    # is the reader's own sentence: none of it came from the repository under evaluation, and
+    # a tokenised source would leave the money attributable to nothing at all (SPEC 5.5).
+    report = _populated_report()
+
+    redacted = redact(report, _policy(0x11))
+
+    assert redacted.costs == report.costs
+    assert redacted.prices_source == PRICES_SOURCE
 
 
 def test_redacting_twice_with_one_policy_is_stable() -> None:

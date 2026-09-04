@@ -9,6 +9,13 @@ it inside ``run``, where the wall clock it costs is already being measured.
 between two runs is a different tool, and a report that cannot say which one it measured is
 not reproducible (:class:`assay.results.Attempt`).
 
+The one widening SPEC §6's three arguments have taken is ``trial_index``, keyword-only, added
+in M3 (ADR-0033). Every attempt records which of a task's n trials produced it, and an adapter
+handed only a task, a workspace and a budget has no way to know the number - so the harness
+that decided to run trial 3 is the thing that says so, and the adapter records it rather than
+inventing it. It is deliberately not folded into ``budget``: every field there is a ``max_*``
+ceiling, and an identity is not a ceiling.
+
 Pure interface: no implementation lives here. The M0 adapters that satisfy it are
 :mod:`assay.adapters.ground_truth` and :mod:`assay.adapters.null`.
 """
@@ -24,6 +31,10 @@ class Adapter(Protocol):
     name: str
     version: str
 
-    def run(self, task: Task, workspace: Path, budget: Budget) -> Attempt:
+    def run(self, task: Task, workspace: Path, budget: Budget, *, trial_index: int) -> Attempt:
         """Workspace is a repo checked out at the task's base state, tests already
-        failing. Return the diff produced, plus token and latency accounting."""
+        failing. Return the diff produced, plus token and latency accounting.
+
+        ``trial_index`` is which of this task's n trials the harness is running, 0-based,
+        and the attempt returned must carry it: a result whose attempt names a different
+        trial is refused (:class:`assay.results.Result`)."""

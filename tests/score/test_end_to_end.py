@@ -50,6 +50,9 @@ _PROVISION_TIMEOUT_S = 300
 # small suite. Generous because a wedged daemon should fail here rather than hang the suite.
 _TRIAL_TIMEOUT_S = 180
 
+# This run is one trial per task per oracle, so it is trial 0 of the n a real run would drive.
+_ONLY_TRIAL = 0
+
 # Neither oracle calls a model, so every cap but the wall clock is deliberately null - "no
 # ceiling, and we said so" rather than an absent key (:class:`assay.results.Budget`).
 _BUDGET = Budget(
@@ -118,10 +121,12 @@ def _trial_results(
 ) -> tuple[Result, ...]:
     """One trial per task per oracle - the smallest run in which both brackets are measured.
 
-    One trial each, not the default five: SPEC §6 gives an adapter no trial index, so both
-    oracles number every attempt 0, and a repetition would be a second result claiming to be
-    the first (:class:`assay.results.Result`'s own validator refuses it). The n-trial runner
-    that owns that numbering arrives with the trials themselves in M3.
+    One trial each, not the default five: a trial here is two real container starts, and an
+    oracle answers every trial of a task identically, so the four further trials would buy no
+    evidence this file does not already have. The numbering they would carry exists now
+    (ADR-0033) - each call names its own trial, and repeating this run at ``trial_index=1``
+    would record a distinguishable second result rather than a duplicate of the first. The
+    n-trial runner that drives that arrives with ``assay run`` in M3.
     """
     adapters: tuple[Adapter, ...] = (GroundTruthAdapter(), NullAdapter())
     return tuple(
@@ -134,6 +139,7 @@ def _trial_results(
                 images[task.task_id], limits=TRIAL_LIMITS, out_root=out_root
             ),
             timeout_s=_TRIAL_TIMEOUT_S,
+            trial_index=_ONLY_TRIAL,
         )
         for adapter in adapters
         for task in tasks

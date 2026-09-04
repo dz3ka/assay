@@ -14,16 +14,24 @@ Import these names from ``assay.sandbox``; which submodule holds which is an imp
 detail.
 """
 
-from assay.sandbox.container import OUT_DIR, run_in_sandbox
+from assay.sandbox.container import (
+    ADAPTER_PHASE_NETWORK,
+    OUT_DIR,
+    adapter_phase_command,
+    run_in_sandbox,
+)
 from assay.sandbox.errors import SandboxError
 from assay.sandbox.image import (
+    AGENT_EXECUTABLE,
     TEST_EXTRA_NAMES,
     VENV_PYTHON,
     WORKSPACE_DIR,
+    build_agent_image,
     build_task_image,
     image_tag,
     read_declared_extras,
     read_installed_closure,
+    render_agent_dockerfile,
     render_base_dockerfile,
     render_extras_dockerfile,
 )
@@ -31,6 +39,8 @@ from assay.sandbox.models import ContainerLimits
 from assay.sandbox.runner import SandboxTestRunner, sandbox_runner_for
 
 __all__ = [
+    "ADAPTER_PHASE_NETWORK",
+    "AGENT_EXECUTABLE",
     "OUT_DIR",
     "TEST_EXTRA_NAMES",
     "VENV_PYTHON",
@@ -38,10 +48,13 @@ __all__ = [
     "ContainerLimits",
     "SandboxError",
     "SandboxTestRunner",
+    "adapter_phase_command",
+    "build_agent_image",
     "build_task_image",
     "image_tag",
     "read_declared_extras",
     "read_installed_closure",
+    "render_agent_dockerfile",
     "render_base_dockerfile",
     "render_extras_dockerfile",
     "run_in_sandbox",

@@ -1,12 +1,22 @@
-"""The policy a trial runs under: one function, and no second way to start a container.
+"""The policy a trial runs under: one module, and no second place a container's argv is written.
 
 SPEC §5.2 and §5.3 are two sentences - model-generated code runs in a container, and a trial has
 no network - and both are only as true as the *worst* place in the tree that starts a container.
-So there is exactly one such place, and every caller goes through it, tests included. That is
-what makes ``tests/sandbox/test_container_policy.py`` evidence rather than decoration: it proves
-"no network" about the argv a real trial takes, not about an argv a test wrote to resemble one.
+So there is exactly one module that says what a container may do, and every caller goes through
+it, tests included. That is what makes ``tests/sandbox/test_container_policy.py`` evidence
+rather than decoration: it proves "no network" about the argv a real trial takes, not about an
+argv a test wrote to resemble one.
 
-Every flag below is a trust property spelled as a command-line argument:
+A trial has **two** container phases and they are not the same policy, which is the whole reason
+this module holds two functions. :func:`run_in_sandbox` is the measurement: the tests run there,
+it is where SPEC §5.3's "no network during a trial" is enforced, and nothing below changes it.
+:func:`adapter_phase_command` is the argv for the phase *before* it, in which an agentic tool
+edits the workspace and has to reach its model endpoint to do so (ADR-0039) - so it is writable
+where the measurement is read-only, and networked where the measurement has no interface at all.
+Keeping the two in one file is deliberate: the difference between them is the security-relevant
+fact, and a reader has to be able to see both postures at once to check it.
+
+The measurement phase's flags, each a trust property spelled as a command-line argument:
 
 * ``--network none`` - no interface at all, not a filtered one. Dependencies are installed when
   the image is built (:mod:`assay.sandbox.image`), so a trial that wants to reach the index has
@@ -70,12 +80,14 @@ client's console group already takes the container with it, so removing the kill
 stops a trial outliving its own budget. It is carried for that host.
 """
 
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Final
 from uuid import uuid4
 
 from assay.host import CommandResult, CommandTimeoutError, minimal_env, run_command
+from assay.sandbox.errors import SandboxError
 from assay.sandbox.image import WORKSPACE_DIR
 from assay.sandbox.models import ContainerLimits
 
@@ -93,6 +105,33 @@ _TMP_DIR: Final = "/tmp"
 # already spent its whole budget, and a daemon that cannot accept one more request in this long
 # is wedged rather than busy.
 _KILL_TIMEOUT_S: Final = 60
+
+# The adapter phase's network, named once so that what it does and does not constrain can be
+# read in one place rather than inferred from an absent flag.
+#
+# **This is docker's default bridge: the container gets an interface with unrestricted outbound
+# access, and it is NOT the hostname allowlist ADR-0039 asks for.** What it constrains is a
+# network namespace of its own - the container cannot reach the host's loopback services, and
+# nothing on the host's LAN is reachable by name it could not already reach by address. What it
+# does not constrain is *which* host the tool connects to: docker has no native hostname
+# allowlist, and the ones that could be built here - a filtering proxy the tool must be made to
+# honour, or host firewall rules - are a process and a privilege this package does not have.
+#
+# So "only ``api.anthropic.com`` is reachable" is, in this milestone, a property of what the
+# image holds and what environment the tool is handed, not of the network stack. The measurement
+# phase is where the non-negotiable actually bites, and there it is ``--network none``
+# (:func:`run_in_sandbox`), unchanged. This gap is stated rather than papered over, in the
+# milestone record as well as here, because a harness that quietly widened its own network while
+# claiming an allowlist would be exactly the confident-number-nobody-should-trust this project
+# exists to refuse.
+ADAPTER_PHASE_NETWORK: Final = "bridge"
+
+# An environment variable name on its way into ``docker run --env NAME``. The *name* only: the
+# value is taken from the client's own environment by the daemon's pass-through form, because an
+# argv is readable by every process on the host and the one value that travels this way is an
+# API key (plan §7a). Refused rather than escaped, the posture this package takes towards every
+# value that reaches a command line.
+_ENV_NAME_PATTERN: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def run_in_sandbox(
@@ -205,6 +244,117 @@ def run_in_sandbox(
         # can only report "no such container".
         _kill_container(name, cwd=out_dir)
         raise
+
+
+def adapter_phase_command(
+    *,
+    image_tag: str,
+    workspace: Path,
+    argv: Sequence[str],
+    limits: ContainerLimits,
+    env_names: Sequence[str],
+) -> tuple[str, ...]:
+    """The ``docker run`` command line an agentic tool is invoked through. Pure; starts nothing.
+
+    An argv rather than a call, because the thing that *runs* it is the
+    :class:`assay.adapters.ToolProcess` seam the adapter was handed - the adapter never learns
+    docker exists (ADR-0039), and the binding that puts these two together lives in
+    :mod:`assay.cli.main` beside every other seam binding. Being pure is also what makes the
+    posture below assertable without a daemon, which matters for a claim about the network.
+
+    The policy differs from :func:`run_in_sandbox`'s in exactly three places, and each of them
+    is the adapter phase being a different job rather than a relaxation of the same one:
+
+    * **The workspace is mounted writable.** The tool's whole output is the tree it leaves, and
+      the trial's own diff of that tree is what gets recorded (ADR-0038). Nothing is measured in
+      this checkout - the measurement happens in a second, untouched one - so a tool that writes
+      a cache, installs a package or leaves a scratch file costs nothing. The root filesystem
+      stays ``--read-only`` with a tmpfs ``/tmp``, so the *image* is still not writable.
+    * **There is a network** (:data:`ADAPTER_PHASE_NETWORK`), because a tool that cannot reach a
+      model is not a tool. Read that constant before believing this is an allowlist; it is not,
+      and it says so.
+    * **Named environment variables are passed through by name**, never as ``NAME=value``. The
+      one thing that travels this way is the model API key, and an argv is readable by every
+      process on the host (plan §7a).
+
+    There is deliberately no ``--name``, and that is a gap rather than a simplification. The
+    measurement phase carries one so that :func:`run_in_sandbox` can ``docker kill`` a container
+    whose budget expired; here the container is started by the tool seam, which kills its
+    *client* and has no name to aim at. **Measured on Windows** (see this module's header) ending
+    the client's console group takes the container with it; *unverified:* on POSIX it does not,
+    and a timed-out adapter phase can outlive its budget. Closing it means the binding owning a
+    name, which is where it belongs and where M3 records it as still open.
+
+    Everything else is the measurement phase's policy, unchanged and for its own reasons:
+    ``--rm``, ``--pull never`` so a missing tag is refused locally rather than fetched,
+    ``--cap-drop=ALL`` plus ``--security-opt=no-new-privileges``, the caller's resource ceiling,
+    and ``HOME=/tmp`` because the root filesystem is read-only and an agentic tool writes
+    dotfiles at start-up.
+
+    Args:
+        image_tag: An image holding the tool, from :func:`assay.sandbox.build_agent_image`.
+        workspace: The checkout to mount **writable** at :data:`assay.sandbox.WORKSPACE_DIR`,
+            which is also the container's working directory. It is the adapter's throwaway
+            worktree, never the user's clone and never the tree a verdict is read from.
+        argv: The tool's command line inside the container, already split, as the adapter
+            composed it.
+        limits: The resource ceiling. No defaults anywhere in this package, deliberately.
+        env_names: Environment variable names to pass through from the client's environment.
+            Names only; a name whose value the client does not hold is simply not set in the
+            container, which is docker's own behaviour and the right one - a missing key is the
+            tool's failure to report, not this function's to guess.
+
+    Returns:
+        The complete argv, ready for :class:`assay.adapters.ToolProcess`.
+
+    Raises:
+        SandboxError: if ``argv`` is empty, or if a name in ``env_names`` is not one - both
+            reach a command line, so both are refused where they arrive rather than escaped.
+    """
+    if not argv:
+        raise SandboxError("no command to run in the adapter phase")
+    passed: list[str] = []
+    for name in env_names:
+        if not _ENV_NAME_PATTERN.match(name):
+            raise SandboxError(f"not an environment variable name: {name!r}")
+        passed.extend(("--env", name))
+    return (
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        ADAPTER_PHASE_NETWORK,
+        "--pull",
+        "never",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        # Writable, unlike the measurement phase's `:ro`: this tree is what the tool works in.
+        # POSIX spelling of the host path, as `run_in_sandbox` gives its reasons for.
+        "--volume",
+        f"{workspace.as_posix()}:{WORKSPACE_DIR}",
+        # The image's own WORKDIR is this path, but the mount replaces what was there at build
+        # time; saying it here means the tool's cwd is the checkout whatever the image set.
+        "--workdir",
+        WORKSPACE_DIR,
+        "--tmpfs",
+        _TMP_DIR,
+        "--env",
+        f"HOME={_TMP_DIR}",
+        *passed,
+        "--memory",
+        f"{limits.memory_mb}m",
+        "--memory-swap",
+        f"{limits.memory_mb}m",
+        "--cpus",
+        limits.cpus,
+        "--pids-limit",
+        str(limits.pids),
+        image_tag,
+        *argv,
+    )
 
 
 def _kill_container(name: str, *, cwd: Path) -> None:

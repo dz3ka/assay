@@ -2,18 +2,21 @@
 
 Three properties carry this module.
 
-The first is that an unbuilt command is *honest* rather than broken: ``run`` is reachable, says
-which milestone builds it, and exits non-zero, so a script that runs it fails instead of
-reading an empty report as an empty result (CLAUDE.md's milestone discipline). The tests assert
-that a schedule is named, not the exact sentence - the wording belongs to
-``NotImplementedInMilestone``.
+The first is that ``run`` refuses a run nobody should trust the report of *before* it spends
+anything: a tool named without the naive baseline is refused with one sentence and exit 1
+(CLAUDE.md - the baseline is in every report), and the refusal lands before the suite is even
+read. The seam that decides where each of the agentic adapter's argvs runs - `git` on this
+host, the tool inside the container - is asserted on a fake process rather than a daemon, for
+the reason ``tests/sandbox/test_adapter_phase.py`` gives about the argv it composes. What
+cannot be asserted here is the run itself: that is ``tests/score/test_end_to_end.py``'s
+bracket, which needs images and containers.
 
-The second is RULING 4's stream split, which exists nowhere else in Assay: the placeholder
-admission goes to stderr and the document goes to stdout, so ``assay report --format json >
-out.json`` leaves a file a consumer can parse *and* a human who still saw the admission. The
-JSON case is asserted both ways round - the notice is on stderr byte-for-byte, and the stdout
-bytes validate as a :class:`~assay.report.Report` - because either half alone would pass while
-the split was broken.
+The second is that a successful ``report`` writes the document and nothing else: stdout carries
+bytes that validate as a :class:`~assay.report.Report`, and stderr carries nothing at all. M0
+split the streams because the intervals were invented and the canonical document could not
+carry the prose admitting it (RULING 4); the intervals are measured now, so every caveat a
+reader is owed is a caption inside the two prose formats and stderr means only that something
+went wrong.
 
 Redaction is asserted structurally and never by token value: the salt is fresh per run
 (SPEC §5.4), so a test that pinned a token would pin the one thing that must not be stable.
@@ -30,7 +33,9 @@ itself.
 
 import io
 import json
-from collections.abc import Sequence
+import re
+import sys
+from collections.abc import Mapping, Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,18 +43,38 @@ from typing import Any
 
 import pytest
 
+from assay.adapters import ProcessOutput
 from assay.cli import main
-from assay.cli.main import EXIT_USAGE, HOST_EXECUTION_NOTICE, HOST_EXECUTION_SENTENCE
-from assay.report import STUB_INTERVAL_NOTICE, Report
+from assay.cli.main import (
+    DEFAULT_MODEL,
+    DEFAULT_TRIAL_TIMEOUT_S,
+    DEFAULT_TRIALS,
+    EXIT_FAILED,
+    EXIT_USAGE,
+    GENERATOR,
+    HOST_EXECUTION_NOTICE,
+    HOST_EXECUTION_SENTENCE,
+    TOOL_API_KEY_ENV,
+    TOOL_KILLED_EXIT_CODE,
+    adapter_phase_process,
+    build_parser,
+    host_tool_process,
+)
+from assay.host import minimal_env
+from assay.report import Report
+from assay.sandbox import AGENT_EXECUTABLE
 from assay.suite import load_suite
 from tests.fixture_repo import EXPECTED_YIELD, build_fixture_repo
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 RESULTS = FIXTURES / "results_overlapping.json"
 
-# The three formats the command offers, and the one command M1 does not implement.
+# The three formats the `report` command offers.
 FORMATS = ["json", "text", "html"]
-UNBUILT = ["run"]
+
+# Stands in for the value of ASSAY_MODEL_API_KEY. Never a real one, and never read from the
+# environment either: what these tests are about is where a key travels, not what it is.
+_KEY = "sk-not-a-real-key"
 
 # The ceiling on one test run, passed to every fixture-repo invocation below. Ten seconds, as
 # in `tests/mine/test_pipeline.py`: only `slow_lookup`'s red run is slow, and it is slow by an
@@ -90,6 +115,38 @@ def test_help_lists_every_command_the_surface_declares(
         assert command in out
 
 
+def test_version_names_the_milestone_beside_the_package_version_and_needs_no_subcommand(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The package version has read 0.1.0 since M0 and cannot tell that skeleton apart from this
+    # harness, so the line carries the milestone too (ADR-0047). The bare argv is half the
+    # claim: `--version` is consumed while options are read, before argparse enforces the
+    # required subcommand, so a user asking what they have installed does not have to name a
+    # command they are not running.
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--version"])
+
+    assert excinfo.value.code == 0
+    captured = capsys.readouterr()
+    assert re.fullmatch(r"assay/\d+\.\d+(\.\d+)? \(milestone M\d\)\n", captured.out)
+    # A version is not a warning: nothing about it belongs on the stream that means something
+    # went wrong.
+    assert captured.err == ""
+
+
+def test_the_version_line_leads_with_the_token_a_suite_records_as_its_generator(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # One string, two surfaces. Every suite Assay writes records GENERATOR in its `generator`
+    # field, so the version line is built from that constant rather than from a second read of
+    # the distribution's version - a reader holding a suite can match the token in it against
+    # the token this prints, and two spellings of it could drift apart.
+    with pytest.raises(SystemExit):
+        main(["--version"])
+
+    assert capsys.readouterr().out.split(" ")[0] == GENERATOR
+
+
 def test_no_command_at_all_is_a_usage_error(capsys: pytest.CaptureFixture[str]) -> None:
     # Bare `assay` has nothing to do. It must not exit 0 and leave a caller believing it did.
     with pytest.raises(SystemExit) as excinfo:
@@ -98,45 +155,30 @@ def test_no_command_at_all_is_a_usage_error(capsys: pytest.CaptureFixture[str]) 
     assert capsys.readouterr().err != ""
 
 
-@pytest.mark.parametrize("command", UNBUILT)
-def test_an_unbuilt_command_fails_and_names_its_milestone(
-    capsys: pytest.CaptureFixture[str], command: str
-) -> None:
-    code, out, err = invoke(capsys, [command])
-
-    assert code != 0
-    # Nothing on stdout: a caller piping the command gets an empty document, never a
-    # diagnostic it might parse as one.
-    assert out == ""
-    assert f"assay {command}" in err
-    assert "M2" in err
-    # The schedule, not the wording: the user should read when the work lands.
-    assert "planned:" in err
-
-
 def test_report_writes_a_document_stdout_can_be_parsed_from(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The acceptance property of RULING 4: the admission is a *field* of the schema, not an
-    # envelope key and not a banner glued to the front of the document.
+    # Nothing but the document reaches stdout, and it parses back into the schema it was
+    # rendered from - the canonical format is API (CLAUDE.md).
     code, out, err = invoke(capsys, ["report", "--results", str(RESULTS), "--format", "json"])
 
     assert code == 0
     report = Report.model_validate(json.loads(out))
-    assert report.intervals_are_placeholders is True
-    assert STUB_INTERVAL_NOTICE not in out
-    assert STUB_INTERVAL_NOTICE in err
+    assert len(report.tools) == 2
+    assert err == ""
 
 
 @pytest.mark.parametrize("fmt", FORMATS)
-def test_stderr_carries_the_placeholder_notice_once_and_verbatim(
+def test_a_successful_report_says_nothing_on_stderr(
     capsys: pytest.CaptureFixture[str], fmt: str
 ) -> None:
-    # Equality, not a substring: verbatim (never re-wrapped or paraphrased) and exactly once,
-    # both in one assertion. The trailing newline is the CLI's, since the constant has none.
+    # M0 printed the placeholder admission here, because the intervals were invented and the
+    # JSON document could not carry the prose saying so. The intervals are measured now, every
+    # caveat a reader is owed is a caption inside the two prose formats, and stderr is back to
+    # meaning "something went wrong" in every format.
     _, _, err = invoke(capsys, ["report", "--results", str(RESULTS), "--format", fmt])
 
-    assert err == STUB_INTERVAL_NOTICE + "\n"
+    assert err == ""
 
 
 def test_the_json_document_gets_the_one_newline_render_json_withholds(
@@ -152,7 +194,7 @@ def test_the_json_document_gets_the_one_newline_render_json_withholds(
 
 @pytest.mark.parametrize(
     ("fmt", "opening"),
-    [("json", "{"), ("text", STUB_INTERVAL_NOTICE), ("html", "<!DOCTYPE html>")],
+    [("json", "{"), ("text", "Assay report"), ("html", "<!DOCTYPE html>")],
 )
 def test_the_format_flag_selects_the_renderer(
     capsys: pytest.CaptureFixture[str], fmt: str, opening: str
@@ -466,3 +508,454 @@ def test_a_test_timeout_below_one_second_is_refused(
     # And it lands before either command reaches the outside world: the host-execution notice is
     # the first thing both of them print, and it was never printed.
     assert HOST_EXECUTION_NOTICE not in captured.err
+
+
+def _tool(*code: str) -> list[str]:
+    """A stand-in for an agentic tool: this interpreter, which every host here has."""
+    return [sys.executable, "-c", *code]
+
+
+def test_the_tool_process_bridge_reports_the_exit_code_and_both_streams(tmp_path: Path) -> None:
+    # The second seam this module binds (`assay.adapters.ToolProcess`). A tool's non-zero exit
+    # is data an adapter records, exactly as a non-zero `git apply --check` is: the tool
+    # answered, and the answer was no.
+    argv = _tool("import sys; print('out'); print('err', file=sys.stderr); sys.exit(3)")
+
+    output = host_tool_process(argv, cwd=tmp_path, timeout_s=30, env=minimal_env())
+
+    assert output.exit_code == 3
+    assert output.stdout.strip() == "out"
+    assert output.stderr.strip() == "err"
+    assert output.timed_out is False
+
+
+def test_a_tool_killed_at_its_budget_is_a_value_rather_than_an_exception(tmp_path: Path) -> None:
+    # A tool that ran out of wall clock is a countable outcome of the trial, not an incident:
+    # the adapter records it and the workspace is scored on whatever the tool left behind.
+    argv = _tool("import time; time.sleep(600)")
+
+    output = host_tool_process(argv, cwd=tmp_path, timeout_s=1, env=minimal_env())
+
+    assert output.timed_out is True
+    assert output.exit_code == TOOL_KILLED_EXIT_CODE
+    # Negative, so it cannot be mistaken for a status the tool chose for itself.
+    assert output.exit_code < 0
+
+
+def test_the_tool_sees_the_directory_and_the_environment_it_was_handed_and_no_more(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The bridge adds nothing to `env`. The model key is the name this matters most for: a tool
+    # under evaluation gets it only when the caller put it there deliberately (plan section 7).
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("ASSAY_MODEL_API_KEY", "sk-not-a-real-key")
+    argv = _tool(
+        "import os, pathlib; print(pathlib.Path.cwd()); print('ASSAY_MODEL_API_KEY' in os.environ)"
+    )
+
+    output = host_tool_process(argv, cwd=workspace, timeout_s=30, env=minimal_env())
+
+    reported_cwd, saw_the_key = output.stdout.splitlines()
+    assert Path(reported_cwd).resolve() == workspace.resolve()
+    assert saw_the_key == "False"
+
+
+# --- `assay run`: the surface, the baseline rule, and where each argv actually runs ----------
+
+# A suite path that does not exist. Every refusal below has to arrive *before* anything is read,
+# so the tests can prove the order by pointing the command at a file nobody wrote.
+_NO_SUITE = "suite-that-was-never-written.json"
+
+# The flags SPEC section 6 fixes for the command, and the ones `run_run` is driven by.
+RUN_FLAGS = ["--suite", "--repo", "--out", "--adapter", "--trials", "--trial-timeout-s", "--model"]
+
+
+def run_argv(tmp_path: Path, *adapters: str) -> list[str]:
+    """An `assay run` command line naming ``adapters``, against paths that do not exist yet."""
+    argv = [
+        "run",
+        "--suite",
+        str(tmp_path / _NO_SUITE),
+        "--repo",
+        str(tmp_path),
+        "--out",
+        str(tmp_path / "results.json"),
+    ]
+    for adapter in adapters:
+        argv += ["--adapter", adapter]
+    return argv
+
+
+@dataclass(frozen=True)
+class Started:
+    """One call the tool seam was asked to make, recorded rather than run."""
+
+    argv: tuple[str, ...]
+    cwd: Path
+    timeout_s: int
+    env: dict[str, str]
+
+
+class FakeProcess:
+    """A :class:`assay.adapters.ToolProcess` that starts nothing and remembers everything.
+
+    The routing binding decides where an argv goes, and *that* is what these tests are about:
+    a real docker client would prove the same thing far more slowly and only on a host with a
+    daemon up (``tests/sandbox/test_adapter_phase.py`` takes the same position about the argv
+    it composes).
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[Started] = []
+
+    def __call__(
+        self, argv: Sequence[str], *, cwd: Path, timeout_s: int, env: Mapping[str, str]
+    ) -> ProcessOutput:
+        self.calls.append(Started(argv=tuple(argv), cwd=cwd, timeout_s=timeout_s, env=dict(env)))
+        return ProcessOutput(exit_code=0, stdout="", stderr="", timed_out=False)
+
+
+def test_the_run_help_no_longer_says_the_command_is_unbuilt(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The command is built, so the surface must stop scheduling it: a user who reads "not
+    # implemented" about a command that runs has been told something false about the tool.
+    with pytest.raises(SystemExit) as excinfo:
+        main(["run", "--help"])
+    assert excinfo.value.code == 0
+
+    shown = " ".join(capsys.readouterr().out.split())
+    assert "not implemented" not in shown.lower()
+    for flag in RUN_FLAGS:
+        assert flag in shown
+
+
+def test_a_run_naming_a_tool_without_the_naive_baseline_is_refused(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    # CLAUDE.md: the naive baseline is in every report. Refused rather than added silently -
+    # adding it would spend money the caller did not ask to spend - and refused before the
+    # suite is read, which is what pointing at a file that does not exist proves.
+    code, out, err = invoke(capsys, run_argv(tmp_path, "agentic"))
+
+    assert code == 1
+    assert out == ""
+    assert len(err.strip().splitlines()) == 1
+    assert "naive" in err
+
+
+def test_naming_the_baseline_alongside_the_tool_gets_past_the_refusal(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    # The same run, with the baseline in it, fails on the suite it was pointed at instead -
+    # so the refusal is about the missing baseline and not about naming a tool at all.
+    code, out, err = invoke(capsys, run_argv(tmp_path, "agentic", "naive"))
+
+    assert code == 1
+    assert out == ""
+    assert _NO_SUITE in err
+
+
+def test_the_two_oracles_are_not_asked_for_a_baseline_they_would_only_bracket(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    # An oracle is not a tool: the pair exists to bracket a report at 1.0 and 0.0, and a run of
+    # the two of them measures the harness rather than anything the baseline could be compared
+    # with. This is also the smallest run there is, and the one the bracket test drives.
+    code, _out, err = invoke(capsys, run_argv(tmp_path, "ground-truth", "null"))
+
+    assert code == 1
+    assert _NO_SUITE in err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run"],
+        ["run", "--suite", "s.json"],
+        ["run", "--suite", "s.json", "--repo", ".", "--out", "r.json"],
+    ],
+    ids=["nothing", "suite-only", "no-adapter"],
+)
+def test_a_run_missing_a_required_argument_is_a_usage_error(argv: list[str]) -> None:
+    # No defaults for the three paths or for the adapter list: which tools were measured is the
+    # whole claim a result set makes, and a default would make it a guess.
+    with pytest.raises(SystemExit) as excinfo:
+        main(argv)
+    assert excinfo.value.code == EXIT_USAGE
+
+
+@pytest.mark.parametrize("trials", ["0", "-1", "not-a-number"], ids=["zero", "negative", "words"])
+def test_a_trial_count_below_one_is_refused(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, trials: str
+) -> None:
+    # A run of no trials writes an empty result set, which reports as a tool that was measured
+    # and scored nothing rather than as a tool nobody ran.
+    with pytest.raises(SystemExit) as excinfo:
+        main([*run_argv(tmp_path, "null"), "--trials", trials])
+    assert excinfo.value.code == EXIT_USAGE
+    assert "--trials" in capsys.readouterr().err
+
+
+def test_the_defaults_are_five_trials_and_the_model_the_adapters_name() -> None:
+    # Five is CLAUDE.md's default n, and it is the number pass^n is read against.
+    parsed = build_parser().parse_args(run_argv(Path(), "null"))
+
+    assert parsed.trials == DEFAULT_TRIALS
+    assert parsed.trial_timeout_s == DEFAULT_TRIAL_TIMEOUT_S
+    assert parsed.model == DEFAULT_MODEL
+
+
+def test_the_harvest_runs_git_on_the_host_exactly_as_the_adapter_asked(tmp_path: Path) -> None:
+    # The agentic adapter has one seam and puts both its harvest and its tool through it, and
+    # the two cannot go to the same place: `git` must run on the host, because the worktree the
+    # harvest reads has a `.git` *file* holding a host absolute path, which means nothing on
+    # the far side of a bind mount. So a `git` argv is handed on untouched.
+    fake = FakeProcess()
+    seam = adapter_phase_process(image_tag="assay-task:abc", api_key=_KEY, process=fake)
+
+    seam(("git", "add", "-A"), cwd=tmp_path, timeout_s=120, env={"PATH": "/usr/bin"})
+
+    started = fake.calls[0]
+    assert started.argv == ("git", "add", "-A")
+    assert started.cwd == tmp_path
+    assert started.timeout_s == 120
+    # Untouched: the harvest is Assay's own machinery and has no business holding a model key.
+    assert started.env == {"PATH": "/usr/bin"}
+
+
+def test_the_tool_itself_is_wrapped_into_the_adapter_phase_container(tmp_path: Path) -> None:
+    # ADR-0039, ruling 7: the tool runs inside the container. What runs on the host is the
+    # docker client, and the argv it is given is the one `assay.sandbox` composes - this
+    # binding writes no container flag of its own.
+    fake = FakeProcess()
+    seam = adapter_phase_process(image_tag="assay-task:abc", api_key=_KEY, process=fake)
+    tool = (AGENT_EXECUTABLE, "-p", "fix the tests")
+
+    seam(tool, cwd=tmp_path, timeout_s=900, env=minimal_env())
+
+    started = fake.calls[0]
+    assert started.argv[:2] == ("docker", "run")
+    assert "assay-task:abc" in started.argv
+    # The tool's own command line, last and unchanged: the container is around it, not in it.
+    assert started.argv[-len(tool) :] == tool
+    assert started.timeout_s == 900
+
+
+def test_the_model_key_reaches_the_container_by_name_and_never_through_an_argv(
+    tmp_path: Path,
+) -> None:
+    # The rename happens here, at the binding: Assay reads ASSAY_MODEL_API_KEY and the tool
+    # reads ANTHROPIC_API_KEY, and neither the adapter nor the sandbox learns either name. The
+    # value travels in the client's environment because an argv is readable by every process
+    # on this machine (plan section 7a).
+    fake = FakeProcess()
+    seam = adapter_phase_process(image_tag="assay-task:abc", api_key=_KEY, process=fake)
+
+    seam((AGENT_EXECUTABLE, "-p", "fix the tests"), cwd=tmp_path, timeout_s=900, env={})
+
+    started = fake.calls[0]
+    assert "--env" in started.argv
+    assert TOOL_API_KEY_ENV in started.argv
+    assert _KEY not in started.argv
+    assert started.env[TOOL_API_KEY_ENV] == _KEY
+
+
+# Prices reach a report only through the command line, and the ones below are plainly nobody's:
+# no rate that could be mistaken for a figure this repository maintains is written into a file
+# here (ADR-0046). $100 per million input tokens and $200 per million output tokens divide by
+# hand against the disjoint fixture's recorded 10240 and 960.
+PRICES_SOURCE = "an invented rate card, priced against nothing"
+PRICED_RESULTS = FIXTURES / "results_disjoint.json"
+
+
+def price_argv(*flags: str) -> list[str]:
+    """A `report` command line over the disjoint fixture, plus whatever pricing flags."""
+    return ["report", "--results", str(PRICED_RESULTS), "--format", "json", *flags]
+
+
+def test_a_report_prices_the_tools_named_and_says_whose_prices_they_are(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The whole flag, end to end. ground-truth recorded 10240 input and 960 output tokens, so
+    # (10240 * 100 + 960 * 200) / 1e6 = $1.216000, over the five tasks it solved: $0.243200
+    # each. null recorded no tokens at all and is reported as unmeasured rather than free.
+    code, out, err = invoke(
+        capsys,
+        price_argv(
+            "--price",
+            "ground-truth=100/200",
+            "--price",
+            "null=100/200",
+            "--prices-source",
+            PRICES_SOURCE,
+        ),
+    )
+
+    assert code == 0
+    assert err == ""
+    document = json.loads(out)
+    null, ground_truth = document["costs"]
+    assert ground_truth["total_usd"] == "1.216000"
+    assert ground_truth["usd_per_solved_task"] == "0.243200"
+    assert null["basis"] == "no_tokens_recorded"
+    assert document["prices_source"] == PRICES_SOURCE
+
+
+def test_a_report_without_any_price_still_carries_a_costs_section(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The default, and every report rendered before this flag existed. The section is there and
+    # every row says why it has no dollars in it: a section that appeared only when it had
+    # money in it would make its own absence a statement (ADR-0035, ADR-0046).
+    _, out, _ = invoke(capsys, price_argv())
+
+    document = json.loads(out)
+
+    assert document["prices_source"] is None
+    assert [cost["basis"] for cost in document["costs"]] == [
+        "no_price_supplied",
+        "no_price_supplied",
+    ]
+
+
+@pytest.mark.parametrize("fmt", FORMATS)
+def test_every_format_shows_the_costs_section(capsys: pytest.CaptureFixture[str], fmt: str) -> None:
+    _, out, _ = invoke(
+        capsys,
+        [
+            "report",
+            "--results",
+            str(PRICED_RESULTS),
+            "--format",
+            fmt,
+            "--price",
+            "ground-truth=100/200",
+            "--prices-source",
+            PRICES_SOURCE,
+        ],
+    )
+
+    assert "1.216000" in out
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--price", "ground-truth=100/200"],
+        ["--prices-source", PRICES_SOURCE],
+    ],
+    ids=["price-without-source", "source-without-price"],
+)
+def test_either_pricing_flag_without_its_partner_is_a_usage_error(
+    capsys: pytest.CaptureFixture[str], flags: list[str]
+) -> None:
+    # Symmetric. Dollars with no stated source cannot be attributed (SPEC 5.5), and a source
+    # that priced nothing describes a table the report does not carry. Both are a command line,
+    # so both land on stderr above the usage line at EXIT_USAGE rather than as a failed run.
+    with pytest.raises(SystemExit) as excinfo:
+        main(price_argv(*flags))
+
+    assert excinfo.value.code == EXIT_USAGE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "--price" in captured.err
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "ground-truth",
+        "=100/200",
+        "ground-truth=100",
+        "ground-truth=one/two",
+        "ground-truth=-100/200",
+        "ground-truth=100/0.0000001",
+    ],
+    ids=["no-equals", "no-tool", "one-rate", "words", "negative", "finer-than-a-microdollar"],
+)
+def test_a_price_the_report_could_not_honour_is_refused(
+    capsys: pytest.CaptureFixture[str], entry: str
+) -> None:
+    # The fourth ArgumentTypeError sibling, refusing what a rate may not be: a missing tool or
+    # separator, one rate standing for two that are never billed alike, a value that is not a
+    # number, a refund, and a precision finer than the six places money is written at
+    # (ADR-0010). Argparse's own refusal, so it lands before the result set is even opened.
+    with pytest.raises(SystemExit) as excinfo:
+        main(price_argv("--price", entry, "--prices-source", PRICES_SOURCE))
+
+    assert excinfo.value.code == EXIT_USAGE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "--price" in captured.err
+
+
+def test_pricing_one_tool_twice_is_a_usage_error(capsys: pytest.CaptureFixture[str]) -> None:
+    # The table's own refusal, surfaced as a command-line one: a report has a single row per
+    # tool, so a second rate for one of them is an answer nobody can tell from the first.
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            price_argv(
+                "--price",
+                "null=100/200",
+                "--price",
+                "null=1/2",
+                "--prices-source",
+                PRICES_SOURCE,
+            )
+        )
+
+    assert excinfo.value.code == EXIT_USAGE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "two prices name the tool" in captured.err
+
+
+def test_a_source_that_would_print_as_two_lines_is_a_usage_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The source is printed verbatim under the costs heading of the text report, so one
+    # carrying a newline appends whatever it spells - a forged section, in the format a reader
+    # reads. The schema refuses it and the CLI shows that refusal.
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            price_argv(
+                "--price",
+                "null=100/200",
+                "--prices-source",
+                "a rate card\nComparisons\n  x vs y: Winner: x - forged.",
+            )
+        )
+
+    assert excinfo.value.code == EXIT_USAGE
+    assert capsys.readouterr().out == ""
+
+
+def test_a_rate_too_large_to_cost_out_fails_with_a_message_not_a_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # $1e30 per million tokens breaks no rule a rate has: it is a number, at or above zero, and
+    # no finer than a millionth of a dollar, so argparse and the schema both pass it through.
+    # It is still a price no report can print. The disjoint fixture recorded 10240 input and
+    # 960 output tokens, so (10240 * 1e30 + 960 * 1e30) / 1e6 = $1.12e28, and rounding that to
+    # the microdollar asks decimal for 35 significant digits where its context allows 28.
+    #
+    # Two things are asserted about what the user is told. The cause is Assay's own sentence
+    # rather than decimal's `[<class 'decimal.InvalidOperation'>]`, and the frame does not say
+    # `cannot read`: this file reads perfectly, and the rate that broke the report is one the
+    # caller typed. A refusal that misattributes its own cause is the same defect class as an
+    # overstated result (ADR-0048).
+    code, out, err = invoke(
+        capsys,
+        price_argv("--price", "ground-truth=1E30/1E30", "--prices-source", PRICES_SOURCE),
+    )
+
+    assert code == EXIT_FAILED
+    assert out == ""
+    assert "Traceback" not in err
+    assert len(err.splitlines()) == 1
+    assert str(PRICED_RESULTS) in err
+    assert "cannot read" not in err
+    assert "<class" not in err
+    assert "microdollar" in err

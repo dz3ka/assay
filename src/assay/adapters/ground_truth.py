@@ -23,11 +23,6 @@ _NS_PER_MS = 1_000_000
 # (:mod:`assay.results.models`); ``Decimal(0)`` is the same number and a different document.
 _NO_COST = Decimal("0.000000")
 
-# SPEC §6 fixes ``run``'s three arguments and none of them carries a trial index, so an M0
-# adapter cannot know which of a task's n trials it is running. It claims the first. The
-# n-trial runner that owns that numbering arrives with the trials themselves in M3 (SPEC §7).
-_FIRST_TRIAL = 0
-
 
 class GroundTruthAdapter:
     """Returns the task's ground-truth patch, unmodified, as its attempt."""
@@ -37,13 +32,17 @@ class GroundTruthAdapter:
     # has one of its own, so what a result attributes it to is the build that produced it.
     version: str = "0.1.0"
 
-    def run(self, task: Task, workspace: Path, budget: Budget) -> Attempt:
+    def run(self, task: Task, workspace: Path, budget: Budget, *, trial_index: int) -> Attempt:
         """Workspace is a repo checked out at the task's base state, tests already
         failing. Return the diff produced, plus token and latency accounting.
 
         ``workspace`` is read no more than it is written: applying the diff is the runner's
         job in M2, inside a container (SPEC §5.2), and M0 runs on the host. ``budget`` is
         unused for the reason the accounting below is zero - there is no work here to cap.
+
+        ``trial_index`` is recorded and nothing else: this adapter answers every trial of a
+        task with the same diff, on purpose, so the trial number is the only thing that tells
+        its n attempts apart (ADR-0033).
         """
         started_ns = monotonic_ns()
         # The entire operation. That it is a lookup rather than a search is the point of it.
@@ -53,7 +52,7 @@ class GroundTruthAdapter:
             adapter_name=self.name,
             adapter_version=self.version,
             task_id=task.task_id,
-            trial_index=_FIRST_TRIAL,
+            trial_index=trial_index,
             diff=diff,
             input_tokens=0,
             output_tokens=0,

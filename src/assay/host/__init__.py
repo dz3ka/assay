@@ -9,6 +9,12 @@ Import these names from ``assay.host`` rather than from the submodules; the spli
 ``process`` (the one call site) and ``git`` (the one caller of that call site in M1) is an
 implementation detail, this surface is not.
 
+From M3 the package holds a second audited seam, on the same terms: :mod:`assay.host.model_api`
+is the only module in ``src/assay`` that may open a socket, and ``tests/host/test_network_egress``
+asserts that no other module - inside this package or out of it - imports ``socket``, ``ssl``,
+``urllib`` or an HTTP client (ADR-0036). The exemption is that one module path rather than this
+directory, because ``git.py``'s standing claim is that it never clones and never fetches.
+
 Nothing here is pure, with one deliberate exception: :mod:`assay.host.junit` starts nothing
 and opens nothing, and lives here rather than above the seam because what it reads is a
 report only a run on this side produces - by :class:`PytestHostRunner` in M1, and by a run
@@ -19,6 +25,7 @@ instance of the ``History`` protocol :class:`GitHistory` satisfies (CLAUDE.md).
 """
 
 from assay.host.git import CheckoutState, GitError, GitHistory, checkout_state
+from assay.host.model_api import HttpModelTransport
 from assay.host.process import (
     CommandFailedError,
     CommandResult,
@@ -37,6 +44,7 @@ __all__ = [
     "EnvironmentSetupError",
     "GitError",
     "GitHistory",
+    "HttpModelTransport",
     "PytestHostRunner",
     "SelectorError",
     "checkout_state",

@@ -147,6 +147,18 @@ _PORCELAIN_PATH_START: Final = 3
 
 _DOCKERFILE_NAME: Final = "Dockerfile"
 
+# The agentic tool M3 measures, and where npm's global prefix puts its entry point on Debian.
+# Both are named here rather than in the adapter, which never learns what it is driving
+# (ADR-0039): the adapter is handed an executable and an argv, and this module is what puts a
+# binary at that path. Both are verified against a real daemon: a built image runs the binary
+# at this exact path - see ``test_the_tool_the_adapter_will_invoke_is_at_the_path_it_invokes``.
+_AGENT_PACKAGE: Final = "@anthropic-ai/claude-code"
+AGENT_EXECUTABLE: Final = "/usr/local/bin/claude"
+
+# A plain release version on its way into a ``RUN`` line and a content address: digits and dots,
+# nothing that npm would read as a range or a shell would read as anything at all.
+_TOOL_VERSION_PATTERN: Final = re.compile(r"^\d+\.\d+\.\d+$")
+
 # The optional extras a repository is allowed to have its test dependencies installed from, in
 # the order they are rendered (ADR-0023). An allowlist rather than "every declared extra": a
 # ``docs`` or ``lint`` extra has nothing to do with running tests and everything to do with
@@ -262,6 +274,92 @@ def render_extras_dockerfile(
 FROM {base_tag}
 RUN uv pip install --python {VENV_PYTHON}{cutoff} -e {clause}
 """
+
+
+def render_agent_dockerfile(*, base_tag: str, tool_version: str | None) -> str:
+    """The agent phase: the agentic CLI, installed over a task image (ADR-0039).
+
+    A third phase over the task image rather than a line in
+    :func:`render_base_dockerfile`, and the reason is the content address. Every task image ever
+    built is addressed by that recipe's text, so adding a node toolchain to it would re-address
+    the environment every M2 trial was measured in - for a tool that no measurement phase ever
+    runs. Layered instead, the measurement image stays byte for byte what it was and the agent
+    image is a strictly larger thing with an address of its own.
+
+    Nothing is copied: ``/workspace`` is already inside ``base_tag`` from the first phase, and
+    at run time it is replaced by a bind mount of the trial's own checkout anyway.
+
+    Written from documentation and since verified against a real daemon: the recipe builds,
+    and the tool answers at :data:`AGENT_EXECUTABLE` inside the built image - see
+    ``tests/sandbox/test_agent_image.py``, which exists to retire exactly this note. The
+    harvest around it is a contract either way (ADR-0038).
+
+    Args:
+        base_tag: The task image this installs over, from :func:`build_task_image`.
+        tool_version: The npm version to pin, or ``None`` for whatever the registry serves
+            today. ``None`` is honest rather than convenient, and it is spelled the way
+            ``exclude_newer=None`` is: an unpinned install means the address does **not** capture
+            which version of the tool is inside, so two runs months apart can measure two
+            different tools under one tag. Pass the version M3's live run observed as soon as
+            there is one, and the address starts meaning what it says.
+
+    Returns:
+        The complete Dockerfile text.
+
+    Raises:
+        SandboxError: if ``tool_version`` is not a plain release version. It reaches a ``RUN``
+            line and a content address, so it is refused where it arrives.
+    """
+    pinned = "" if tool_version is None else f"@{_checked_tool_version(tool_version)}"
+    # `--no-install-recommends` because the recommended set of a node toolchain is most of a
+    # desktop; the apt lists are removed in the same layer so they are not carried in the image.
+    return f"""\
+FROM {base_tag}
+RUN apt-get update \\
+ && apt-get install -y --no-install-recommends nodejs npm \\
+ && rm -rf /var/lib/apt/lists/* \\
+ && npm install -g {_AGENT_PACKAGE}{pinned}
+"""
+
+
+def build_agent_image(
+    *, base_tag: str, base_commit: str, tool_version: str | None, timeout_s: int
+) -> str:
+    """Build the agent image over ``base_tag`` and return its tag.
+
+    The image the adapter phase runs in (:func:`assay.sandbox.adapter_phase_command`), and the
+    only image in this package that is built with a network reachable at build time on purpose:
+    the tool comes from a registry, and SPEC §5.3's rule is that dependencies are installed when
+    the image is built rather than during a trial. The measurement image is untouched.
+
+    Cheap to call twice for the same base and the same version, like every other build here: the
+    tag is a content address, so a second call re-tags layers BuildKit already holds.
+
+    Args:
+        base_tag: The task image to layer over.
+        base_commit: The commit that image holds, which goes into this tag as well - two
+            commits are two environments even when the tool installed on top is the same.
+        tool_version: The version to pin, or ``None`` for today's registry.
+        timeout_s: Wall-clock budget for the build. A cold one installs a node toolchain, so
+            this is minutes rather than seconds.
+
+    Returns:
+        The tag the agent image now carries.
+
+    Raises:
+        SandboxError: if ``tool_version`` is not a plain release version.
+        CommandFailedError: if ``docker build`` exited non-zero. Not wrapped, for the reason
+            :func:`build_task_image` gives: the message already quotes the tail of the command's
+            stderr, which is the only thing a caller could usefully print.
+        CommandTimeoutError: if the budget expired.
+    """
+    recipe = render_agent_dockerfile(base_tag=base_tag, tool_version=tool_version)
+    tag = image_tag(base_image=base_tag, dockerfile=recipe, base_commit=base_commit)
+    # An empty context, because this phase copies nothing - the same reason the extras phase
+    # sends one: the repository is already inside `base_tag`.
+    with tempfile.TemporaryDirectory(prefix="assay-agent-") as nothing:
+        _docker_build(dockerfile=recipe, tag=tag, context=Path(nothing), timeout_s=timeout_s)
+    return tag
 
 
 def image_tag(*, base_image: str, dockerfile: str, base_commit: str) -> str:
@@ -635,4 +733,19 @@ def _checked_cutoff(value: str) -> str:
     """
     if not _CUTOFF_PATTERN.match(value):
         raise SandboxError(f"not a canonical RFC3339 UTC instant: {value!r}")
+    return value
+
+
+def _checked_tool_version(value: str) -> str:
+    """Refuse a tool version that is not one, before it becomes an install argument.
+
+    :func:`_checked_cutoff`'s posture applied to the other value that reaches a ``RUN`` line
+    from outside this module. npm's version syntax includes ranges and tags - ``^2``,
+    ``latest``, ``next`` - and every one of them would put an address on an image whose contents
+    the address cannot describe, which is the failure a content address exists to prevent. A
+    version is a version or it is refused; ``None`` is how "today's registry" is said, and it is
+    said in the recipe rather than smuggled through this check.
+    """
+    if not _TOOL_VERSION_PATTERN.match(value):
+        raise SandboxError(f"not a plain release version: {value!r}")
     return value

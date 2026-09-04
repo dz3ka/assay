@@ -151,13 +151,20 @@ class Adapter(Protocol):
     name: str
     version: str
 
-    def run(self, task: Task, workspace: Path, budget: Budget) -> Attempt:
+    def run(self, task: Task, workspace: Path, budget: Budget, *, trial_index: int) -> Attempt:
         """Workspace is a repo checked out at the task's base state, tests already
-        failing. Return the diff produced, plus token and latency accounting."""
+        failing. Return the diff produced, plus token and latency accounting.
+
+        ``trial_index`` is which of this task's n trials the harness is running, 0-based,
+        and the attempt returned must carry it."""
 ```
 
 Anything drivable headlessly can be an adapter: an agentic CLI, an editor in a batch mode, a
 raw model API.
+
+`trial_index` is the one argument added since M0, in M3 (ADR-0033). Every attempt records the
+trial it came from and an adapter cannot know that number, so the harness that decided to run
+trial 3 passes it; a result whose attempt names a different trial is refused by the schema.
 
 **Ship a naive baseline adapter in M3 and keep it in every report.** One call to a raw model
 with the failing test and the relevant file, no agent loop, no retrieval. Most benchmark
@@ -174,8 +181,8 @@ Portcall's, because the two are being built in parallel.
 | **M0** | Skeleton: CLI, task schema, suite format, adapter protocol, results store, CI | `assay --help` works; a hand-written task round-trips through the schema; CI green |
 | **M1** | `mine` + `validate` — test-anchored fixes only | Produces a valid suite from a real public repo, with the red→green gate enforced and yield reported |
 | **M2** | `sandbox` + executable scoring | Ground-truth diffs score 100%; empty diffs score 0%; network is provably off during trials |
-| **M3** | Two adapters (naive baseline + one agentic tool), n-trial runs | pass@1 and pass^n produced end to end for both |
-| **M4** | `stats` + cost accounting | Wilson intervals, paired significance test, cost per solved task; overlapping intervals suppress any winner claim |
+| **M3** | Two adapters (naive baseline + one agentic tool), n-trial runs | pass@1 and pass^n produced end to end for both, with a Wilson interval on pass^n; overlapping intervals suppress any winner claim |
+| **M4** | Paired statistics + cost accounting | Paired significance test, a bootstrap interval on pass@1, cost per solved task |
 | **M5** | Public release | HTML report, README, one-command demo on a public repo, published results for two tools with intervals |
 
 M0–M5 is the publishable unit. v2 is the navigation/retrieval task type, refactor-preservation

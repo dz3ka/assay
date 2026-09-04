@@ -75,3 +75,19 @@ capability the code does not have is a defect, not a roadmap.
 | [0030](0030-an-out-of-band-exit-code-is-assays-malfunction.md) | An exit code pytest could not have produced means Assay malfunctioned, and scores `ERRORED` | Accepted · narrows 0003 |
 | [0031](0031-an-errored-trial-never-leaves-the-denominator.md) | An errored trial never leaves the denominator, so ADR-0028's verdict rests on legibility | Accepted · amends 0028 |
 | [0032](0032-a-test-directory-is-a-test-change.md) | A path under a test directory is a test change, and the yield names what the rule admits | Accepted · applies 0026 and 0015 |
+| [0033](0033-the-harness-owns-the-trial-index.md) | The trial number is the harness's, passed to the adapter rather than read back out of it | Accepted · applies 0011 |
+| [0034](0034-wilson-lands-in-m3-and-the-placeholder-is-deleted.md) | Wilson lands in M3 and the M0 placeholder apparatus is deleted, not flipped to `False` | Accepted · discharges 0005 |
+| [0035](0035-the-interval-is-on-pass-caret-n-over-tasks.md) | The interval is Wilson over tasks, and pass@1's missing band is stated rather than left blank | Accepted · applies 0004 and 0034 · amended by 0043 |
+| [0036](0036-outbound-network-lives-in-one-module.md) | Outbound network lives in one module, and an AST fence proves nothing else opens a socket | Accepted · applies 0006 |
+| [0037](0037-a-diff-that-touches-a-test-path-is-refused.md) | A diff touching a test path is refused before it is applied, and scores `FAILED` | Accepted · applies 0032 and 0003 |
+| [0038](0038-the-adapters-workspace-is-not-the-measured-one.md) | The adapter's workspace is never the measured workspace, and the harvest excludes nothing | Accepted · applies 0037 |
+| [0039](0039-claude-code-runs-inside-the-container.md) | The agentic tool is Claude Code, it runs inside the container, and the shared model family is flagged | Accepted · applies 0006 and 0038 |
+| [0040](0040-the-naive-adapter-strips-one-enclosing-fence.md) | The naive baseline strips one enclosing code fence, and the repair is on the record | Accepted · applies 0003 |
+| [0041](0041-the-default-model-is-claude-sonnet-5.md) | The default model is `claude-sonnet-5`, and nothing has been measured on either side of the change | Accepted |
+| [0042](0042-the-readme-withdraws-the-promise-of-a-live-run.md) | The README withdraws its promise of a live run, and M4 ships machinery only | Accepted |
+| [0043](0043-pass-at-1-is-a-percentile-bootstrap-over-tasks.md) | pass@1's band is a percentile bootstrap over tasks, drawn with `random()` from a fixed seed | Accepted · amends 0035 |
+| [0044](0044-the-paired-test-is-exact-mcnemar-on-pass-caret-n.md) | The paired test is exact McNemar on pass^n, and a significant p never names a winner | Accepted · applies 0005 and 0004 |
+| [0045](0045-a-claim-carries-its-verification-inline.md) | A claim written into a brief carries its verification inline | Accepted |
+| [0046](0046-a-cost-line-carries-the-reason-it-has-no-dollars.md) | A cost line carries the reason it has no dollars, and the costs section is always printed | Accepted · applies 0035 and 0010 |
+| [0047](0047-the-version-line-names-the-milestone.md) | `--version` names the milestone beside the package version, and the unbuilt-command machinery outlives its argument | Accepted |
+| [0048](0048-a-refusal-names-its-own-cause.md) | A refusal carries its own sentence, and a handler claims only what its `try` block can know | Accepted · applies 0046 and 0010 |
