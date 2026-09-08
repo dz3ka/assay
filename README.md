@@ -12,7 +12,7 @@ The point is not the score. The point is that the score is defensible: a task on
 suite if its tests provably fail before the fix and provably pass after it, and the report
 refuses to name a winner it cannot separate.
 
-**Status: M5, the last milestone in [`SPEC.md`](SPEC.md) §7.** All four commands are built and the
+**Status: M0–M5 complete — the publishable unit in [`SPEC.md`](SPEC.md) §7 has shipped.** All four commands are built and the
 pipeline runs end to end, from a git history to a redacted report. What each milestone measured
 lives in [`docs/milestones/`](docs/milestones/) — one record per milestone, each stating at length
 what it does and does not establish — rather than being summarised here, because the summary was a
