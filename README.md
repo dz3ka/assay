@@ -12,45 +12,50 @@ The point is not the score. The point is that the score is defensible: a task on
 suite if its tests provably fail before the fix and provably pass after it, and the report
 refuses to name a winner it cannot separate.
 
-**Status: M4 complete.** M0's schemas, adapter protocol, redaction boundary and report pipeline
-landed; M1's `assay mine` and `assay validate` run the red→green gate over a real local clone —
-the walk, the test/source split, the proof that the tests fail at the parent and pass once the
-commit's own diff is applied, and the yield accounting for everything discarded on the way. M2
-builds the two pieces a run stands on: a per-task container with memory, CPU and process ceilings
-and no network interface at all, whose tests assert those negatives rather than describe them, and
-tier-1 executable scoring, which decides a trial on the test report and nothing else. The two
-oracles are now measured rather than asserted — the ground-truth adapter scores 1.0 and the null
-adapter 0.0 over every task mined from the fixture repository, with mining on the host and each
-trial in a container. Pinning the environment in the task image also paid ADR-0017's debt:
-`no_tests_executed` is split out of `still_red`, so "the fix did not work" and "no test ran" have
-stopped sharing a tally. M3 builds `assay run` on top of that: n trials per task per tool, pass@1
-and pass^n, real Wilson bands, and a renderer that declines to name a winner when they overlap.
-Every command is now built. M3's end-to-end evidence is an oracle run, and
-[`docs/milestones/m3-oracle-run.md`](docs/milestones/m3-oracle-run.md) says exactly what that does
-and does not establish. M4 adds the two statistics a comparison needs and the arithmetic a buyer
-needs: a seeded percentile bootstrap band on pass@1, an exact McNemar test over the tasks two tools
-disagree on — printed beside the verdict and never allowed to move it — and cost per solved task,
-priced from rates you supply at report time, because Assay stores none. **No model has yet been
-called, in any milestone, including this one.** M4 is machinery, checked against hand-computed
-fixtures and the two oracles' free results;
-[`docs/milestones/m4-paired-statistics-and-cost.md`](docs/milestones/m4-paired-statistics-and-cost.md)
-says at length what that leaves unmeasured.
+**Status: M5, the last milestone in [`SPEC.md`](SPEC.md) §7.** All four commands are built and the
+pipeline runs end to end, from a git history to a redacted report. What each milestone measured
+lives in [`docs/milestones/`](docs/milestones/) — one record per milestone, each stating at length
+what it does and does not establish — rather than being summarised here, because the summary was a
+lossy second copy of those documents and it drifted
+([ADR-0055](docs/adr/0055-the-readme-is-a-release-document-not-a-changelog.md)).
 
-Mining has been run by hand over a real repository twice, and the second run is the one to read.
-M1 walked [743 commits of httpie](docs/milestones/m1-yield-httpie.md) for **0 valid tasks**. M2's
-pinned per-task images [re-walked the same 743](docs/milestones/m2-yield-httpie-pinned.md), and it
-is still **743 commits examined → 0 valid tasks**: the pinned image did not lift the reach limit
+**The results this repository publishes are the two oracles.** `ground-truth` replays the recorded
+fix and scores 1.0; `null` returns an empty diff and scores 0.0; between them they bracket every
+real result precisely by not being one. **No model has been called in any milestone, on any path,
+by any adapter** — no API key has been read and nothing has been spent
+([ADR-0051](docs/adr/0051-m5s-two-tools-are-two-oracles.md)). Every command works, and nothing has
+been graded by one. Those are two different sentences and both are true here.
+
+Mining has been run by hand over real repositories three times, and all three runs are on the
+record. M1 walked [743 commits of httpie](docs/milestones/m1-yield-httpie.md) for **0 valid
+tasks**. M2's pinned per-task images [walked it again](docs/milestones/m2-yield-httpie-pinned.md) —
+a 40-commit pilot first, then the full 743 under the same harness — and it is still **743 commits
+examined → 0 valid tasks**: for httpie the pinned image did not lift the reach limit
 [ADR-0019](docs/adr/0019-m1-cannot-mine-unpinned-test-dependencies.md) recorded, and that negative
 result is the finding. What moved is where the failure is counted. **125 of those 743 commits
 (16.8%) came back `unprovisioned`** — a commit no environment could be built for, which is not
 one of the eight rejection reasons and is not evidence about httpie: it is a sentence about
 Assay, counted and reported separately and never folded into the rejection set
-([ADR-0026](docs/adr/0026-the-image-residue-is-reported-not-counted.md)). The walk finished in
-426.6 seconds, and that is a symptom rather than a win — an image that dies inside `setup.py`
-dies in about a second, and 125 of the 127 commits that got past the pre-gate split never
-reached a container at all. Two things are still true and worth reading twice: the container
-holds *trials*, so a mining walk runs the target repository's build and test suite **on this
-machine, outside a sandbox** — and no interval printed today describes a tool that called a model.
+([ADR-0026](docs/adr/0026-the-image-residue-is-reported-not-counted.md)).
+
+M5 then pointed the shipped `assay mine` at three other libraries, and got this project's first
+non-zero yield on software it was not built against: **600 single-parent commits examined → 14
+valid tasks** ([`m5-yield-public-repos.md`](docs/milestones/m5-yield-public-repos.md)). Four things
+are true of that number, and they belong in the same breath as the number rather than in a
+footnote under it. The three repositories were chosen under a rule written down before the first
+clone existed — small single-package pytest libraries with pinned dev dependencies and no service
+dependencies — and that rule selects for the shape this miner already reached, so **it is a reach
+limit sidestepped by advance selection, not a reach limit lifted**. ADR-0019 is unrepealed: a
+repository whose test dependencies are unpinned still cannot be mined this way, and nothing in the
+run bears on one. Three repositories chosen that way are not a sample of anything, so 2.3% is not
+an estimate of any population and carries no interval. And **those 14 tasks have never been
+re-validated or run by any tool** — they passed the red→green gate once, at mining time, which is
+what "valid task" means and all it means. That Assay can mine a suite is demonstrated; that it has
+mined a suite worth running is not.
+
+Two things are still true and worth reading twice: the container holds *trials*, so a mining walk
+runs the target repository's build and test suite **on this machine, outside a sandbox** — and no
+interval printed today describes a tool that called a model.
 
 ## What it does today
 
@@ -114,18 +119,31 @@ fresh per render and never persisted
   on your monorepo and a 0.71 on someone else's are not comparable, and Assay will not print
   them side by side. Yield is reported alongside them for the same reason: "1,847 commits
   examined → 213 valid tasks" is the honest form, and the task count alone is not.
+- **It has mined very few real repositories, and only ones that fit.** Four in all: httpie, walked
+  twice for **0 valid tasks** out of 743 commits both times, and three small pytest libraries
+  chosen in advance against a written rule, for **14 valid tasks** out of 600 commits
+  ([`m5-yield-public-repos.md`](docs/milestones/m5-yield-public-repos.md)). That rule selects for
+  the shape the miner already reaches, so the second result sidesteps
+  [ADR-0019](docs/adr/0019-m1-cannot-mine-unpinned-test-dependencies.md)'s reach limit rather than
+  lifting it, and a repository whose test dependencies are unpinned still cannot be mined here.
+  None of those 14 tasks has been re-validated or scored by anything since. `assay mine` also runs
+  the host path only — M2's pinned per-task image was never wired into it
+  ([ADR-0053](docs/adr/0053-the-public-repo-yield-uses-the-shipped-command-on-the-host-path.md)) —
+  so 14 is a floor on that path rather than a measurement of Assay's reach.
 - **It does not tell you whether a tool can run in your environment at all.** That is
   [portcall](https://github.com/dz3ka/portcall), the sibling project. Portcall answers *can
   this tool run here* — DNS, egress, proxies, TLS interception. Assay answers *is it any
   good here*. Portcall goes ahead of the deployment; Assay comes after it. They share no
   code.
 - **No real tool has been scored yet.** `assay run` is built and exercised end to end, but only by
-  the two oracles: ground truth scores 1.0 and null 0.0 over a mined suite, which brackets every
-  real result without being one. The naive baseline and the agentic Claude Code adapter are built,
-  unit-tested on fakes and container-tested, and **have never called a model** — so this repository
-  contains no naive-vs-agentic comparison and no evidence that either adapter can solve anything.
-  **M4 did not change that.** This section used to say the first live run was M4's; M4 calls no
-  model and spends nothing, so the promise is withdrawn here rather than quietly deleted
+  the two oracles: ground truth scores 1.0 and null 0.0 over a suite mined from the synthetic
+  fixture repository, which brackets every real result without being one. The naive baseline and
+  the agentic Claude Code adapter are built, unit-tested on fakes and container-tested, and **have
+  never called a model** — so this repository contains no naive-vs-agentic comparison and no
+  evidence that either adapter can solve anything.
+  **Neither M4 nor M5 changed that.** This section used to say the first live run was M4's; M4
+  called no model and spent nothing, and neither did M5, so the promise is withdrawn here rather
+  than quietly deleted
   ([ADR-0042](docs/adr/0042-the-readme-withdraws-the-promise-of-a-live-run.md)), and no milestone
   owns the live run. Mining and validation stay narrow: one repository family, test-anchored
   commits, and a walk that runs on the host rather than in a container. The interval
@@ -179,6 +197,31 @@ uv run --frozen assay --help
 `mypy --strict` over `src` and `tests`, then the test suite, in that order, stopping at the
 first failure. CI runs exactly it, so local checks and CI cannot drift apart.
 
+### Demo — the whole pipeline in one command
+
+```bash
+uv run --frozen python scripts/demo.py
+```
+
+Mine a suite, revalidate it, score it with the two oracles, and render the report twice, as text
+and as HTML: SPEC §6's four commands in SPEC §6's order, with no flags, no model, no API key and
+nothing spent. It needs a running Docker daemon and writes both documents under `build/demo/`. It
+was timed twice on one developer machine — Windows 11, Docker server 29.7.2, both task images
+already in the local cache — at **206 s** and **204.1 s**, most of it spent on the one fixture
+commit whose red test is written never to finish. That is what it cost on that machine, not a
+promise about yours, and the cold case — no task images, no layer cache, a base image still to
+pull — is slower by an unmeasured amount: no number for it is published here.
+
+**It runs against a synthetic repository, and it says so on stderr before the first step.** The
+target is the fixture `tests/fixture_repo.py` builds into a temporary directory: a history authored
+so that each of the miner's verdicts fires exactly once, which is why its yield is a specification
+this repository's tests enforce rather than an observation about software. The two tasks it
+produces measure this harness and say nothing about any tool
+([ADR-0050](docs/adr/0050-the-demo-runs-against-the-fixture-and-says-so-first.md),
+[ADR-0054](docs/adr/0054-a-premise-of-adr-0050-is-overtaken-and-the-decision-stands.md)). The run
+recorded for M5, with the report it produced, is in
+[`m5-public-release.md`](docs/milestones/m5-public-release.md).
+
 Render a report from the recorded fixture result set, in each of the three formats:
 
 ```bash
@@ -219,10 +262,10 @@ readable by every process on the machine.
 | `0` | The command ran. |
 | `1` | Assay refused: unreadable input, a schema version it does not support, a suite whose hash does not match its body, or a suite that no longer revalidates. |
 | `2` | Bad invocation — argparse rejected the command line. |
-| `3` | The command exists in the surface but is not implemented in this milestone. No command reaches it now: all four are built. |
 
-`3` is its own code so a caller can tell "this milestone has not built that yet" from "that
-went wrong", and neither of them reads as success.
+Those three are all of them, and each one has a command that produces it. `1` and `2` are separate
+so a caller can tell "Assay refused the input" from "the command line was wrong", and neither reads
+as success.
 
 ## Why it is built this way
 
@@ -237,7 +280,13 @@ M2's: six on what a task image installs, what it still cannot reach, and how it 
 the commit its address claims; one on why the sandbox tests fail rather than skip when Docker is
 absent; and four on the edges of an executable verdict — a trial killed at its cgroup ceiling, a
 selector no runner would accept, an exit code pytest could not have produced, and why an errored
-trial never leaves the denominator.
+trial never leaves the denominator. 0032–0048 are M3's and M4's: what counts as a test change, who
+owns the trial index, where the one interval and then the second one come from, the fence that
+keeps outbound network in a single module, the two real adapters and the model behind them, and
+what a cost line and a refusal each have to say when they have nothing to report. 0049–0056 are
+M5's — what a published report may not carry, what the one-command demo points at and why that
+survives a yield it did not expect, what produced the public-repo figure, the shape of this
+document, and why the exit-code table above lists three codes rather than four.
 
 Start with [ADR-0002](docs/adr/0002-tasks-are-mined-not-authored.md) for why the tasks come
 out of git history rather than out of someone's judgement about what a good test case looks

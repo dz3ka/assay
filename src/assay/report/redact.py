@@ -26,6 +26,10 @@ same repository could be cross-referenced line by line.
 Dependency direction (KICKOFF item 7): renderers depend on this module, this module depends on
 :mod:`assay.report.model`, and never the other way round - which is why :data:`Redacted` is
 declared next to the fields that hold one and merely re-exported from here.
+:data:`~assay.report.model.RedactedReport` is declared there for the same reason and is not
+re-exported at all: :func:`redact` is the only function that may mint one, and the two prose
+renderers require one, so what this module returns is what a rendered report is allowed to be
+(ADR-0058).
 
 Pure: hashing and model construction only. No I/O, no git, no clock - apart from
 :meth:`RedactionPolicy.from_random`, which draws from the OS entropy source.
@@ -39,7 +43,7 @@ from typing import Annotated, Literal, Self
 from pydantic import Field
 
 from assay.core import SchemaModel
-from assay.report.model import Redacted, Report, TaskLine
+from assay.report.model import Redacted, RedactedReport, Report, TaskLine
 
 # What a token is about. The kind is both the visible prefix on a token and part of the hashed
 # message, so the same text filed under two kinds cannot produce one shared token.
@@ -111,7 +115,7 @@ def _redact_task_line(line: TaskLine, policy: RedactionPolicy) -> TaskLine:
     )
 
 
-def redact(report: Report, policy: RedactionPolicy) -> Report:
+def redact(report: Report, policy: RedactionPolicy) -> RedactedReport:
     """Return the report again with every repo-derived string replaced by a token.
 
     Total by construction: the fields are named out rather than copied wholesale, so a field
@@ -122,12 +126,19 @@ def redact(report: Report, policy: RedactionPolicy) -> Report:
     they hold tool names, scores, intervals, and the money the reader priced the run with,
     which are what the report is for. See this module's docstring for why that is a decision
     rather than an omission.
+
+    The return type is the whole guarantee behind the sentence the prose renderers print. This
+    is the only function that mints a :data:`~assay.report.model.RedactedReport`, so a page
+    that says every identifier on it is a token was built from a report this function returned
+    (ADR-0058).
     """
-    return Report(
-        suite_hash=report.suite_hash,
-        tools=report.tools,
-        comparisons=report.comparisons,
-        costs=report.costs,
-        prices_source=report.prices_source,
-        tasks=tuple(_redact_task_line(line, policy) for line in report.tasks),
+    return RedactedReport(
+        Report(
+            suite_hash=report.suite_hash,
+            tools=report.tools,
+            comparisons=report.comparisons,
+            costs=report.costs,
+            prices_source=report.prices_source,
+            tasks=tuple(_redact_task_line(line, policy) for line in report.tasks),
+        )
     )

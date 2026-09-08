@@ -3,11 +3,9 @@
 The surface was declared whole from M0 and filled in a milestone at a time: until a command
 existed it was still reachable, named the milestone that would build it and exited non-zero,
 so a script driving Assay failed loudly rather than reading silence as a result. M3 built the
-last of them, ``run``, and the machinery for scheduling an unbuilt one is left in place
-(:data:`PLANNED`, :data:`_UNBUILT_HELP`) rather than deleted - not because a fifth command is
-coming, since SPEC §6 publishes four and §7's M5 adds none, but because deleting it would
-retire :data:`EXIT_NOT_IMPLEMENTED` from a surface that has published it since M0. That is a
-compatibility decision, and it is taken at M5's release freeze rather than here (ADR-0047).
+last of them, ``run``, and M5's freeze deleted the machinery that had scheduled an unbuilt one,
+along with the exit code it produced: SPEC §6 publishes four commands and §7's M5 adds none, so
+every command here is built and every branch below is reachable (ADR-0056).
 
 What the surface says about itself is ``--version``, on the top-level parser alone: the build
 is a fact about the installation, not about a command, and the line it prints leads with the
@@ -57,7 +55,7 @@ from assay.adapters import (
     ProcessOutput,
     ToolProcess,
 )
-from assay.core import AssayError, NotImplementedInMilestone
+from assay.core import AssayError
 from assay.host import (
     CommandTimeoutError,
     EnvironmentSetupError,
@@ -81,8 +79,8 @@ from assay.mine import (
 )
 from assay.report import (
     PriceTable,
+    RedactedReport,
     RedactionPolicy,
-    Report,
     ToolPrice,
     build_report,
     redact,
@@ -106,21 +104,11 @@ from assay.suite import SuiteBody, Task, load_suite, save_suite
 # The milestone this build is, and the only thing in the tree that can say so. The package
 # version has read 0.1.0 since M0 and will keep reading it until something is released, so it
 # cannot tell M0's four-command skeleton apart from this harness - which is why `--version`
-# prints both (ADR-0047). Also quoted in every "not implemented" message, so one edit moves the
-# whole surface forward.
-MILESTONE = "M4"
+# prints both (ADR-0047). `--version` is its only reader since the freeze retired the "not
+# implemented" message it used to be quoted into (ADR-0056).
+MILESTONE = "M5"
 
-# Where each unbuilt command is scheduled (SPEC §7). Empty since M3 built `run`, which was the
-# last of the four, and empty for good: SPEC §6 publishes exactly four commands and §7's M5
-# adds none. Kept rather than deleted because deleting it retires exit code 3 from a published
-# surface - a compatibility decision, deferred to M5's release freeze (ADR-0047).
-PLANNED: dict[str, str] = {}
-
-# One line of help per unbuilt command: what it would do, so `assay --help` reads as a map of
-# the tool rather than a list of errors.
-_UNBUILT_HELP: dict[str, str] = {}
-
-type Renderer = Callable[[Report], str]
+type Renderer = Callable[[RedactedReport], str]
 
 RENDERERS: dict[str, Renderer] = {
     "json": render_json,
@@ -141,9 +129,6 @@ EXIT_FAILED = 1
 # argparse's own code for a malformed command line. Named here only so the three do not
 # collide; argparse exits with it directly and this module never returns it.
 EXIT_USAGE = 2
-# The command exists in the surface but not in this milestone. Distinct from EXIT_FAILED so a
-# script can tell "Assay cannot do this yet" from "Assay tried and failed".
-EXIT_NOT_IMPLEMENTED = 3
 
 # The ceiling on **one** test run, and what `--test-timeout-s` defaults to. Three runs happen
 # per candidate, so it is not a budget for the whole gate; it is the point at which a hanging
@@ -405,13 +390,12 @@ def _price_entry(raw: str) -> ToolPrice:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the whole command surface, the unbuilt command included.
+    """Build the whole command surface: the four commands SPEC §6 publishes, all of them built.
 
-    `run` is registered as a real subcommand rather than omitted: `assay --help` showing the
-    four commands is M0's stated exit criterion (SPEC §7) and it should show what Assay is
-    going to be, and a user who types `assay run` deserves a schedule instead of "invalid
-    choice". The subcommands are registered in SPEC §6's order rather than alphabetically,
-    because that order is the pipeline: mine, validate, run, report.
+    `assay --help` showing those four is M0's stated exit criterion (SPEC §7), and since M5's
+    freeze the four are also all there is - the surface no longer registers a command it cannot
+    run (ADR-0056). They are registered in SPEC §6's order rather than alphabetically, because
+    that order is the pipeline: mine, validate, run, report.
     """
     parser = argparse.ArgumentParser(
         prog="assay",
@@ -576,14 +560,6 @@ def build_parser() -> argparse.ArgumentParser:
         "It is written into every adapter's recorded version: a report that could not say "
         "which model answered could not say what it measured.",
     )
-
-    for command in _UNBUILT_HELP:
-        subparsers.add_parser(
-            command,
-            help=f"{_UNBUILT_HELP[command]} Not implemented in {MILESTONE}; "
-            f"planned for {PLANNED[command]}.",
-            description=_UNBUILT_HELP[command],
-        )
 
     report = subparsers.add_parser(
         "report",
@@ -1257,66 +1233,60 @@ def main(argv: Sequence[str] | None = None) -> int:
     ``argv`` defaults to the real command line and is a parameter so tests can drive the whole
     surface in-process, without a shell and without depending on the script being installed.
 
-    ``NotImplementedInMilestone`` is raised by the unbuilt commands and caught here rather
-    than avoided: raising is what an in-process caller should see, and turning it into a line
-    on stderr plus an exit code is exactly this module's job.
+    Every command below is built, so this returns what the command returned and raises nothing
+    of its own; the exit codes are :data:`EXIT_OK` and :data:`EXIT_FAILED`, plus argparse's own
+    :data:`EXIT_USAGE` from the parse above (ADR-0056).
     """
     parser = build_parser()
     args = parser.parse_args(argv)
     command: str = args.command
 
+    if command == "mine":
+        return run_mine(
+            repo=args.repo,
+            out=args.out,
+            name=args.name,
+            limit=args.limit,
+            timeout_s=args.test_timeout_s,
+        )
+    if command == "validate":
+        return run_validate(suite_path=args.suite, repo=args.repo, timeout_s=args.test_timeout_s)
+    if command == "run":
+        return run_run(
+            suite_path=args.suite,
+            repo=args.repo,
+            out=args.out,
+            adapter_names=args.adapters,
+            trials=args.trials,
+            timeout_s=args.trial_timeout_s,
+            model=args.model,
+        )
+    # `report` is the last of the four and the fall-through rather than a fourth `if`:
+    # argparse requires a subcommand and rejects any name not registered above, so a
+    # command that reached here is this one. A branch for it would need an unreachable
+    # `else` beneath it, which is what the freeze deleted (ADR-0056).
+    results: Path = args.results
+    fmt: str = args.format
+    entries: list[ToolPrice] = args.price or []
+    source: str | None = args.prices_source
+    # Symmetric, and refused here because this is where ``parser`` is: a price with no
+    # stated source prints dollars nobody can attribute (SPEC §5.5), and a source with
+    # no price names the provenance of a table the report does not carry. Neither is a
+    # report worth rendering, and both are a command line, so both exit EXIT_USAGE
+    # through argparse's own error rather than as a failure of the run.
+    if bool(entries) != (source is not None):
+        parser.error(
+            "--price and --prices-source go together: dollars with no stated source "
+            "cannot be attributed, and a source that priced nothing describes a table "
+            "this report does not carry"
+        )
     try:
-        if command == "mine":
-            return run_mine(
-                repo=args.repo,
-                out=args.out,
-                name=args.name,
-                limit=args.limit,
-                timeout_s=args.test_timeout_s,
-            )
-        if command == "validate":
-            return run_validate(
-                suite_path=args.suite, repo=args.repo, timeout_s=args.test_timeout_s
-            )
-        if command == "run":
-            return run_run(
-                suite_path=args.suite,
-                repo=args.repo,
-                out=args.out,
-                adapter_names=args.adapters,
-                trials=args.trials,
-                timeout_s=args.trial_timeout_s,
-                model=args.model,
-            )
-        if command == "report":
-            results: Path = args.results
-            fmt: str = args.format
-            entries: list[ToolPrice] = args.price or []
-            source: str | None = args.prices_source
-            # Symmetric, and refused here because this is where ``parser`` is: a price with no
-            # stated source prints dollars nobody can attribute (SPEC §5.5), and a source with
-            # no price names the provenance of a table the report does not carry. Neither is a
-            # report worth rendering, and both are a command line, so both exit EXIT_USAGE
-            # through argparse's own error rather than as a failure of the run.
-            if bool(entries) != (source is not None):
-                parser.error(
-                    "--price and --prices-source go together: dollars with no stated source "
-                    "cannot be attributed, and a source that priced nothing describes a table "
-                    "this report does not carry"
-                )
-            try:
-                prices = (
-                    None if source is None else PriceTable(source=source, prices=tuple(entries))
-                )
-            except ValidationError as error:
-                # The table's own refusals - two rates for one tool, a source that would print
-                # as two lines. The schema owns them, so its sentence is the one shown.
-                parser.error(f"these prices cannot be used: {error}")
-            return run_report(results, fmt, prices)
-        raise NotImplementedInMilestone(command, MILESTONE, PLANNED[command])
-    except NotImplementedInMilestone as error:
-        print(error, file=sys.stderr)
-        return EXIT_NOT_IMPLEMENTED
+        prices = None if source is None else PriceTable(source=source, prices=tuple(entries))
+    except ValidationError as error:
+        # The table's own refusals - two rates for one tool, a source that would print
+        # as two lines. The schema owns them, so its sentence is the one shown.
+        parser.error(f"these prices cannot be used: {error}")
+    return run_report(results, fmt, prices)
 
 
 if __name__ == "__main__":

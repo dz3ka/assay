@@ -12,7 +12,7 @@ from assay.core.canonical import (
     canonical_json,
     content_hash,
 )
-from assay.core.errors import AssayError, NotImplementedInMilestone
+from assay.core.errors import AssayError
 from assay.core.model import SchemaModel
 from assay.core.versioning import (
     SUPPORTED,
@@ -29,7 +29,6 @@ __all__ = [
     "AssayError",
     "CanonicalizationError",
     "JsonValue",
-    "NotImplementedInMilestone",
     "SchemaKind",
     "SchemaModel",
     "UnsupportedSchemaVersionError",

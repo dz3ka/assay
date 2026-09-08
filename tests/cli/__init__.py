@@ -1,1 +1,1 @@
-"""Tests for the command surface: what the four commands promise while three are unbuilt."""
+"""Tests for the command surface: what the four commands promise, and what they refuse."""

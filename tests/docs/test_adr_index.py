@@ -126,10 +126,80 @@ REQUIRED_HEADINGS = (
 # read may make, and the difference is now written down in both. It is here rather than folded
 # into 0046 because misattributing a cause is the same defect as overstating a result, reached
 # from the side of the output nobody reads until something has already gone wrong.
+# 0049 is M5's first, and it is the milestone's own subject applied to the report: the document
+# stops being read by the person who produced it, so it says what its column of HMAC tokens is
+# and that the salt behind them is drawn per render and never kept - the property 0009 provides
+# and a recipient cannot check for themselves. Its second half is a refusal that costs nothing to
+# state now and would be expensive to reverse later: no timestamp, no generator string, no field
+# in the schema. A clock would put I/O in a layer whose renderers are pure and make two renders of
+# one result set differ, the suite hash is already the provenance that matters, and prose inside
+# the canonical document would freeze one wording as a compatibility promise in the milestone
+# that makes the schema public.
+# 0050 decides what the repository's first command is allowed to point at. The answer is the
+# fixture, because the two runs against real software are on the record at 0 valid tasks and a
+# demonstration that prints an empty suite teaches the wrong lesson - and because the fixture's
+# yield is the one number in the project that is a specification rather than an observation. The
+# cost of that choice is that the numbers are about the harness, so the frame is printed to stderr
+# before the first subprocess starts rather than left to the README. The rest of the ADR is where
+# the demo may live: a script and not a fifth subcommand, because `src/` may not import `tests/`
+# and 0047 has just decided M5 freezes the surface rather than growing it.
+# 0051 is the decision the release will be judged on. SPEC section 7 grades M5 on published
+# results for two tools, and the two adapters that ran are oracles - the recorded fix and nothing
+# at all - which bracket every real result precisely by not being one. The record is that the
+# criterion is met in letter and short in substance, that both halves are written down, and that
+# the disclosure sits above the figures rather than below them, because a reader who sees a
+# pass^n table first has priced the repository before reaching a caveat. It extends 0042 from the
+# front page to every published surface: 0042 forbade a dated promise about a milestone that had
+# not shipped, and this forbids a number described as something other than what produced it.
+# 0052 closes a hole in 0007 that had been open since M0 and sat in one field nobody read: a
+# repository with no `origin` named itself by its absolute path on the host, and that path is
+# inside the body a suite's content address is a hash of - so one history mined from two
+# directories had two addresses, which is the exact failure content addressing exists to
+# prevent. The name is now the repository's own root commit or commits, sorted and joined,
+# because that is derived from what the history contains rather than from where it sits. It
+# extends 0007 and supersedes nothing, and it records one residual it does not fix: two
+# spellings of one `origin` URL still give two addresses.
+# 0053 records what produced M5's public-repo yield, and it is the shipped `assay mine` on the
+# host path: `run_mine` passes `host_runner_for` as a literal, so the pinned per-task image 0021
+# and 0023 built lives in `assay run`'s trials and has never been wired into mining. The
+# alternative was M2's uncommitted re-mine script, which would have published a headline figure
+# nobody outside this machine could re-derive. It amends 0025 by naming where that spent widening
+# lives, and it fixes the selection rule and the walk limit before the first run so that no
+# threshold in the published document can have been chosen after seeing a number.
+# 0054 marks one paragraph of 0050 as overtaken by the yield 0053 produced: the claim that
+# pointing the miner at real software does not work was measured against two httpie runs, and
+# three public repositories later returned 14 valid tasks out of 600 commits. The decision does
+# not move, because none of the grounds it rests on does - the fixture's yield is still the only
+# one in the project that is a specification, `src/` still may not import `tests/`, and a first
+# command still cannot clone and mine for a quarter of an hour. It amends 0050 rather than
+# editing it, for the reason 0023 and 0031 give: an ADR is immutable once accepted, and a
+# back-pointer written into one is a second place for the two to disagree.
+# 0055 turns the README from a changelog into a release document: the milestone-by-milestone
+# narrative it accumulated from M0 to M4 moves to `docs/milestones/`, where one record per
+# milestone already says what that milestone did and did not establish, and the front page keeps
+# the present tense, the "What it does not do" section and the yield sentences the tests pin. It
+# applies 0042 rather than weakening it - no dated promise returns with the shorter text - and it
+# is the record for how M5's public-repo yield is worded on the front page: a reach limit
+# sidestepped by advance selection, never one lifted.
+# 0056 is the freeze 0047 scheduled, and what it records is a deletion. The machinery for
+# declaring an unbuilt command has been empty since M3 built `run`, and the only thing keeping it
+# alive was exit code 3, published since M0 and producible by no path in the tree. M5 freezes the
+# surface, so the choice is between publishing a code nothing can return and retiring it, and
+# this record retires it - the two dicts, the subparser loop over an empty one, the unreachable
+# raise, `EXIT_NOT_IMPLEMENTED`, `NotImplementedInMilestone` and the README row all go. It
+# discharges 0047 rather than amending it: 0047 named this milestone's freeze as the trigger and
+# listed the deletion as the alternative it rejected on scope, so what happened here is the
+# deferral being honoured, not the decision being revisited.
+# 0057 records the HTML report's legibility rules - a light canvas declared rather than inherited
+# from the reader, a scroll container per wide table, hashes that wrap rather than truncate - as an
+# application of 0049, on the ground that a claim the reader cannot read whole is not on the page.
+# 0058 gives the two prose renderers a `RedactedReport` parameter, so that 0049's sentence about
+# the tokens on this page rests on the type of the argument rather than on a check the renderer
+# never performs; it applies 0049 as well, and neither record supersedes anything.
 #
-# The set is contiguous, and that is the assertion. Forty-eight files is the number a reviewer
-# should find, numbered 0001 through 0048 with nothing missing.
-EXPECTED_NUMBERS = {f"{number:04d}" for number in range(1, 49)}
+# The set is contiguous, and that is the assertion. Fifty-eight files is the number a reviewer
+# should find, numbered 0001 through 0058 with nothing missing.
+EXPECTED_NUMBERS = {f"{number:04d}" for number in range(1, 59)}
 
 # A markdown link target that names an ADR file: `[0005](0005-no-winner-....md)`.
 _ADR_LINK = re.compile(r"\]\((\d{4}-[a-z0-9-]+\.md)\)")

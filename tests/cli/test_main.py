@@ -31,6 +31,7 @@ per test and pytest's function-scoped ``capsys``, so :func:`drive` captures the 
 itself.
 """
 
+import argparse
 import io
 import json
 import re
@@ -113,6 +114,24 @@ def test_help_lists_every_command_the_surface_declares(
     out = capsys.readouterr().out
     for command in ["mine", "validate", "run", "report"]:
         assert command in out
+
+
+def test_the_parser_registers_exactly_the_four_commands_the_surface_declares() -> None:
+    # Equality rather than membership, and the reason is ADR-0056: `main` dispatches `mine`,
+    # `validate` and `run` by name and lets everything else fall through to `report`, which is
+    # sound only while the registered set is exactly these four. A fifth subparser would inherit
+    # `report`'s handler in silence, and this assertion is what fails on the commit that
+    # registers it - a runtime guard would be the dead branch that record deletes. The names are
+    # read off the built parser and not out of `--help`, so what is pinned is registration and
+    # not the formatting of a help page.
+    registered = {
+        name
+        for action in build_parser()._actions
+        if isinstance(action, argparse._SubParsersAction)
+        for name in action.choices
+    }
+
+    assert registered == {"mine", "validate", "run", "report"}
 
 
 def test_version_names_the_milestone_beside_the_package_version_and_needs_no_subcommand(

@@ -7,8 +7,8 @@ requires-python = ">=3.12"
 dependencies = ["pydantic>=2"]
 
 [project.scripts]
-# `uv run assay` resolves to `main`, which returns the process exit code. Three of the
-# four commands exit 3 (not implemented in this milestone); `report` is the built one.
+# `uv run assay` resolves to `main`, which returns the process exit code: 0, 1, or
+# argparse's own 2 for a malformed command line.
 assay = "assay.cli.main:main"
 
 [build-system]
@@ -45,11 +45,6 @@ select = [
     "UP",   # pyupgrade
     "W",
 ]
-
-[tool.ruff.lint.per-file-ignores]
-# N818 wants an "Error" suffix. NotImplementedInMilestone is user-facing vocabulary
-# ("assay run is not implemented in M0"), and its name is fixed by the CLI contract.
-"src/assay/core/errors.py" = ["N818"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"

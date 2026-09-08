@@ -91,3 +91,13 @@ capability the code does not have is a defect, not a roadmap.
 | [0046](0046-a-cost-line-carries-the-reason-it-has-no-dollars.md) | A cost line carries the reason it has no dollars, and the costs section is always printed | Accepted · applies 0035 and 0010 |
 | [0047](0047-the-version-line-names-the-milestone.md) | `--version` names the milestone beside the package version, and the unbuilt-command machinery outlives its argument | Accepted |
 | [0048](0048-a-refusal-names-its-own-cause.md) | A refusal carries its own sentence, and a handler claims only what its `try` block can know | Accepted · applies 0046 and 0010 |
+| [0049](0049-the-report-states-its-redaction-and-carries-no-clock.md) | The published report states its redaction, and carries no timestamp, generator string or schema field | Accepted · applies 0009 and 0008 |
+| [0050](0050-the-demo-runs-against-the-fixture-and-says-so-first.md) | The one-command demo runs against the synthetic fixture repository, and says so before the first step | Accepted · applies 0013 and 0047 |
+| [0051](0051-m5s-two-tools-are-two-oracles.md) | M5's published results are the two oracles, and the record says what produced them before it prints them | Accepted · extends 0042, applies 0003 |
+| [0052](0052-a-repository-with-no-remote-names-itself-by-its-root-commit.md) | A repository with no remote names itself by its root commit, never by its path on the host | Accepted · extends 0007, applies 0048 |
+| [0053](0053-the-public-repo-yield-uses-the-shipped-command-on-the-host-path.md) | The public-repo yield is measured with the shipped command on the host path, and the pinned-image miner stays unwired | Accepted · amends 0025, applies 0013 and 0019 |
+| [0054](0054-a-premise-of-adr-0050-is-overtaken-and-the-decision-stands.md) | A premise of ADR-0050 is overtaken by M5's public-repo yield, and the demo stays on the fixture | Accepted · amends 0050 |
+| [0055](0055-the-readme-is-a-release-document-not-a-changelog.md) | The README is a release document, and the milestone narrative moves to `docs/milestones/` | Accepted · applies 0042 and 0051 |
+| [0056](0056-the-unbuilt-command-machinery-is-deleted-and-exit-code-3-is-retired.md) | The unbuilt-command machinery is deleted and exit code 3 is retired at the freeze | Accepted · discharges 0047 |
+| [0057](0057-the-page-declares-its-canvas-and-scrolls-per-table.md) | The report page declares its canvas, scrolls per table, and wraps rather than truncates | Accepted · applies 0049 |
+| [0058](0058-the-prose-renderers-take-a-redacted-report.md) | The prose renderers take a redacted report, so the sentence they print is backed by a type | Accepted · applies 0049 and 0009 |

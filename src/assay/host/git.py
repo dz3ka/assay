@@ -10,7 +10,9 @@ nothing (CLAUDE.md, "report yield, not just totals": a refusal has to be countab
 Two blast-radius rules are structural rather than advisory. Checkouts happen in a throwaway
 ``git worktree`` under ``worktree_root``, so nothing here can dirty the user's clone; and
 Assay never clones or fetches, so ``repo`` is a path that already existed and ``repo_url`` is
-a label rather than a network operation (SPEC §5.1 - the repository never leaves the machine).
+a label rather than a network operation - a declared ``origin`` where there is one, and
+otherwise a name derived from the history itself (SPEC §5.1 - the repository never leaves the
+machine; ADR-0052 - and its name never carries where the machine kept it).
 
 This class satisfies the ``History`` protocol structurally, the way the M0 adapters satisfy
 ``Adapter`` (:mod:`assay.adapters.protocol`): no base class, conformance proved by mypy at the
@@ -56,6 +58,11 @@ _LOG_FORMAT: Final = f"%H{_FIELD_SEPARATOR}%P{_FIELD_SEPARATOR}%s"
 # A revision reaching an argv is either a full object name or an abbreviation of one. Nothing
 # else - a branch name or a ``--flag`` would both be arguments Assay did not mean to pass.
 _REVISION_PATTERN: Final = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+# What a repository with no declared origin calls itself, prefixed so the value is never
+# mistaken for a URL by anything reading a task. The name is the repository's own root commit
+# (or commits): content-derived, so it is the same string from every copy of one history.
+_ROOT_COMMIT_PREFIX: Final = "root-commit:"
 
 # Plumbing (log, diff, remote) answers in milliseconds on any repository a laptop holds; a
 # checkout writes a whole tree to disk. Both are ceilings on a hang, not budgets to spend.
@@ -127,14 +134,46 @@ class GitHistory:
         self._env: Final = _git_env()
 
     def repo_url(self) -> str:
-        """Name the repository: its ``origin`` remote if it has one, else its local path.
+        """Name the repository: its ``origin`` remote if it has one, else its root commit.
 
-        Never a network operation. The value ends up in ``Task.repo_url`` as provenance, and
-        a repository with no remote is a perfectly good thing to mine (SPEC §5.1).
+        Never a network operation, and never host state either. The value reaches
+        ``Task.repo_url``, which sits inside the body a suite's content address is a hash of
+        (ADR-0007, ADR-0052): an absolute local path here would give one history two addresses
+        - one per directory it happened to be mined from - and a result that cannot be
+        reproduced is the one thing the content addressing exists to prevent (SPEC §5.5).
+
+        So a repository with no remote names itself by what it *contains*. A root commit is
+        derived from the history rather than from where the history is sitting, it needs no
+        network to compute, and it is still checkable offline against a candidate checkout by
+        anyone holding the report. A repository with no remote remains a perfectly ordinary
+        thing to mine (SPEC §5.1) - it is only being named differently.
+
+        ``git rev-list --max-parents=0 HEAD`` can print more than one line: a history that
+        absorbed an unrelated one has several roots. Git's traversal order is not a contract,
+        so every root is named and the set is sorted into one spelling - taking the first line
+        would let the order git walked in decide the suite's address. Refusing a multi-root
+        repository outright was the other option, and it would make a legitimate history
+        unmineable for a reason that has nothing to do with its commits.
+
+        Raises:
+            GitError: if the repository has neither an ``origin`` remote nor a commit. An
+                empty repository is refused here, where the cause can be named, rather than
+                handed a fallback that would fail the history walk one call later (ADR-0048).
         """
         found = self._git("remote", "get-url", "origin", check=False)
         url = found.stdout.strip()
-        return url if found.exit_code == 0 and url else str(self._repo)
+        if found.exit_code == 0 and url:
+            return url
+        roots = self._git("rev-list", "--max-parents=0", "HEAD", check=False)
+        lines = [line.strip() for line in roots.stdout.split("\n") if line.strip()]
+        if roots.exit_code != 0 or not lines:
+            raise GitError(
+                f"cannot name the repository at {self._repo}: it has no `origin` remote to "
+                "cite and no commit to take a root object name from"
+            )
+        # Checked like every other object name git hands back, because this one becomes part
+        # of a task field rather than an argv - and a task field is what gets hashed.
+        return _ROOT_COMMIT_PREFIX + "+".join(sorted(_checked_revision(line) for line in lines))
 
     def commits(self, *, limit: int | None) -> Iterator[CommitRef]:
         """Walk history newest-first, yielding only commits that have exactly one parent.

@@ -24,7 +24,12 @@ class History(Protocol):
     """Read-only access to one repository's git history and working states."""
 
     def repo_url(self) -> str:
-        """The origin the mined tasks cite. Never emitted unredacted; the report owns that."""
+        """The origin the mined tasks cite: a declared URL or a content-derived identity.
+
+        Never a host path - the value is hashed into the suite's content address, so one
+        history mined from two directories has to answer with one string. Never emitted
+        unredacted either; the report owns that.
+        """
 
     def commits(self, *, limit: int | None) -> Iterator[CommitRef]:
         """Walk candidate commits, newest first, ``--no-merges`` so each has one parent.

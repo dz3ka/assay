@@ -243,12 +243,82 @@ def test_repo_url_is_the_origin_remote_when_the_clone_has_one(tmp_path: Path) ->
     assert history.repo_url() == "https://example.invalid/fixture.git"
 
 
-def test_repo_url_falls_back_to_the_local_path_rather_than_fetching(tmp_path: Path) -> None:
+def test_repo_url_names_the_root_commit_when_the_repository_has_no_remote(
+    tmp_path: Path,
+) -> None:
     # Assay never clones and never fetches (SPEC §5.1); a repository with no remote is a
-    # perfectly ordinary thing to mine, and it still has to be nameable in a task.
-    history, repo = _history(tmp_path)
+    # perfectly ordinary thing to mine, and it still has to be nameable in a task. The name
+    # it gets is derived from the history itself, so it says the same thing wherever the
+    # directory happens to sit.
+    repo = build_fixture_repo(tmp_path)
+    history = GitHistory(repo, worktree_root=tmp_path / "worktrees")
+    seed = next(commit for commit in FIXTURE_COMMITS if commit.label == "seed")
 
-    assert history.repo_url() == str(repo)
+    assert history.repo_url() == f"root-commit:{seed.sha}"
+
+
+def test_repo_url_is_identical_for_one_history_built_in_two_directories(tmp_path: Path) -> None:
+    # The property the whole fallback exists for: a suite's content address is a hash of a
+    # body that carries `Task.repo_url`, so two checkouts of one history that hashed to two
+    # addresses would make a result unreproducible (SPEC §5.5).
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    here = build_fixture_repo(tmp_path / "a")
+    there = build_fixture_repo(tmp_path / "b")
+
+    named_here = GitHistory(here, worktree_root=tmp_path / "wt-a").repo_url()
+    named_there = GitHistory(there, worktree_root=tmp_path / "wt-b").repo_url()
+
+    assert named_here == named_there
+    assert here.as_posix() not in named_here
+    assert there.as_posix() not in named_there
+
+
+def test_repo_url_names_every_root_of_a_history_that_has_more_than_one(tmp_path: Path) -> None:
+    # `git rev-list --max-parents=0` prints one line per root, and git's traversal order is
+    # not a contract. Taking the first line would make the name depend on the order git
+    # happened to walk in, so every root is named and the set is sorted into one spelling.
+    repo = tmp_path / "two-roots"
+    repo.mkdir()
+    _git(repo, "init", "--initial-branch=main")
+    _write(repo, "src/app.py", _BASE_SOURCE)
+    first = _commit(repo, "root: the trunk's own beginning", when="2024-01-01T00:00:01+00:00")
+
+    _git(repo, "checkout", "--orphan", "unrelated")
+    _write(repo, "vendored/notice.txt", "imported wholesale, with its own history\n")
+    second = _commit(repo, "root: an unrelated history", when="2024-01-01T00:00:02+00:00")
+
+    _git(repo, "checkout", "main")
+    _git(
+        repo,
+        "merge",
+        "--no-ff",
+        "--allow-unrelated-histories",
+        "-m",
+        "merge: the vendored history into the trunk",
+        "unrelated",
+        when="2024-01-01T00:00:03+00:00",
+    )
+    history = GitHistory(repo, worktree_root=tmp_path / "worktrees")
+
+    assert history.repo_url() == f"root-commit:{'+'.join(sorted([first, second]))}"
+
+
+def test_repo_url_refuses_a_repository_with_neither_a_remote_nor_a_commit(tmp_path: Path) -> None:
+    # An empty repository has nothing to be mined from, so it is refused here rather than
+    # given a name that would only fail a call later (ADR-0048: name the cause at the seam).
+    repo = tmp_path / "empty"
+    repo.mkdir()
+    _git(repo, "init", "--initial-branch=main")
+    history = GitHistory(repo, worktree_root=tmp_path / "worktrees")
+
+    with pytest.raises(GitError) as refusal:
+        history.repo_url()
+
+    message = str(refusal.value)
+    assert str(repo) in message
+    assert "origin" in message
+    assert "commit" in message
 
 
 def test_a_worktree_holds_the_commit_and_is_removed_and_pruned_afterwards(tmp_path: Path) -> None:

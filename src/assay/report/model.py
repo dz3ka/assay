@@ -569,6 +569,16 @@ class Report(SchemaModel):
     tasks: tuple[TaskLine, ...]
 
 
+# A report that has been through the redaction boundary. Declared here, beside the schema it
+# wraps, for the same reason :data:`Redacted` is: :mod:`assay.report.redact` depends on the
+# schema and not the other way round. It is a NewType rather than a class because a redacted
+# report must still *be* a :class:`Report` everywhere one is written out, while being
+# impossible to satisfy by accident with a report nobody redacted. The two prose renderers ask
+# for one, so the sentence they print about this page's tokens rests on the type of what they
+# were handed rather than on a check they never perform (ADR-0058).
+RedactedReport = NewType("RedactedReport", Report)
+
+
 def build_report(
     rs: ResultSet, summaries: tuple[ToolSummary, ...], prices: PriceTable | None = None
 ) -> Report:

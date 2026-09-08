@@ -28,6 +28,14 @@ things it means, and the rates the row priced with are printed beside it - a dol
 reader cannot re-derive from the document is a claim rather than a measurement (SPEC 5.5).
 Cost ranks nothing here either.
 
+The report also says that it has been redacted, in both prose formats and in one wording. Every
+task identifier and path on the page is an HMAC token under a salt drawn for that render and
+never stored (ADR-0009), and a column of tokens nobody labelled reads as a column of truncated
+identifiers - so :data:`_REDACTION_STATEMENT` goes under the suite hash, above every number, and
+says what the tokens are, that the salt is gone, and that nothing turns the treatment off. It is
+the fourth sentence written for a reader and kept out of the schema, for the same reason as the
+other three.
+
 ``tasks`` is a trial log, not a task list: :func:`~assay.report.build_report` emits one line per
 recorded *result*, so a task appears once per tool per trial. All three formats present it that
 way, and each says so next to the count - collapsing the repeats would be the M4 aggregation
@@ -50,6 +58,7 @@ from assay.report.model import (
     BOOTSTRAP_SEED,
     Comparison,
     Interval,
+    RedactedReport,
     Report,
     TaskLine,
     ToolCost,
@@ -100,6 +109,25 @@ _COST_METHOD = (
 # What the costs section says instead of naming a source when no price was given. Stated rather
 # than left blank: every row already carries its own reason, and the heading has to agree.
 _NO_PRICES = "no prices were supplied"
+
+# Said under the suite hash, in both prose formats. The page is a column of HMAC tokens, and a
+# reader who cannot tell a token from a truncated identifier cannot tell a redacted report from
+# a careless one - so the report names the treatment its own text has been through (SPEC 5.4,
+# ADR-0009). Three claims, because each is one a recipient would otherwise have to take on
+# trust: what the tokens are, that the salt is per render and unstored, and that redaction has
+# no opt-out. Render-local like the captions above it, and for the same reason: a prose field in
+# the schema would freeze this wording as a compatibility promise (ADR-0008).
+#
+# The word carrying the claim is "here": the sentence is about this page, not about redaction in
+# general. Both formats that print it therefore take a `RedactedReport`, which only `redact` can
+# mint, so the claim is backed by the type of the argument rather than by a check the renderer
+# would have to perform on text it cannot tell apart from a token (ADR-0058). `render_json`
+# prints no sentence and keeps taking a plain `Report`.
+_REDACTION_STATEMENT = (
+    "every task identifier and path here is an HMAC-SHA-256 token under a salt drawn for this "
+    "render and never stored, so two reports on one suite share no token, and there is no flag "
+    "that turns it off"
+)
 
 
 def _price_provenance(report: Report) -> str:
@@ -215,12 +243,18 @@ def _text_trial_line(line: TaskLine, task_width: int) -> str:
     return "".join(parts)
 
 
-def render_text(report: Report) -> str:
+def render_text(report: RedactedReport) -> str:
     """Render the console report: the numbers, then the trial log.
 
     Each section heading carries the caveat its table needs - what pass@1's missing band means
     under Tools, what a trial line counts under Trials - unwrapped, because wrapping would put
     a line width between the text and the constants the tests pin.
+
+    The parameter is a :data:`~assay.report.model.RedactedReport` because the header states
+    that every identifier and path *here* is a token, and only :func:`~assay.report.redact`
+    mints one. This function performs no check of its own: it could not tell a token from text
+    that resembles one, and a renderer that guessed would be asserting by appearance what it
+    cannot prove (ADR-0058).
     """
     tool_width = max((len(s.tool) for s in report.tools), default=0)
     task_width = max((len(t.task_id) for t in report.tasks), default=0)
@@ -235,7 +269,7 @@ def render_text(report: Report) -> str:
     ]
 
     sections = [
-        f"Assay report\nSuite: {report.suite_hash}",
+        f"Assay report\nSuite: {report.suite_hash}\nRedaction: {_REDACTION_STATEMENT}",
         "\n".join([f"Tools ({_INTERVAL_METHODS})", *tools]),
         "\n".join(["Comparisons", *comparisons]),
         "\n".join([f"Costs ({_price_provenance(report)}; {_COST_METHOD})", *costs]),
@@ -246,12 +280,48 @@ def render_text(report: Report) -> str:
 
 # Everything the page needs to be legible, inline. An external stylesheet would make opening a
 # report a network request, and a report is read on machines that must not make one.
+#
+# Five of these rules are answers to measurements taken on the rendered page, and each is worth
+# its line:
+#
+# `color-scheme: light` because the page was legible only by accident - it declared no canvas
+# and no text colour, inherited the user agent's white, and left a dark-mode browser free to
+# repaint greys that were measured against white. The report is a light document and now says
+# so, rather than a document that happens to be light.
+#
+# `.scroll` because at 375px the widest table is 679px and, unwrapped, it dragged the whole
+# body sideways: the only unscrolled view of the scores ended inside the pass@1 interval
+# column, putting the flattering number on screen and the pass^n band - the one that decides
+# the ranking and here refuses to name a winner - off it. One container per table, so scrolling
+# the costs does not scroll the scores out from under their own heading. The tables keep their
+# alignment, which is the whole job of a table of numbers.
+#
+# `overflow-wrap: anywhere` on `code` because the suite hash is 71 unbreakable characters, 507px
+# of them, and it is the report's core provenance claim (ADR-0049). It wraps mid-token and stays
+# whole; truncating the digest to fit a phone would shorten the line that says what was measured.
+#
+# #6b6b6b and #8a8a8a because #777 text measured 4.478:1 and #999 borders 2.849:1 on white,
+# under the 4.5:1 and 3:1 floors. The faint cells are precisely the ones that keep "not
+# recorded" apart from "measured zero".
+#
+# `p` at 34rem because 60rem sets the redaction sentence at 120 characters a line, and that is
+# the sentence ADR-0049 says has to be read first. The tables keep the 60rem they need.
 _HTML_STYLE = """\
-body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 60rem; }
-table { border-collapse: collapse; margin-bottom: 1.5rem; }
-th, td { border: 1px solid #999; padding: 0.25rem 0.75rem; text-align: left; }
+:root { color-scheme: light; }
+body {
+  background-color: #fff;
+  color: #1a1a1a;
+  font-family: system-ui, sans-serif;
+  margin: 2rem;
+  max-width: 60rem;
+}
+p { max-width: 34rem; line-height: 1.5; }
+code { overflow-wrap: anywhere; }
+.scroll { overflow-x: auto; margin-bottom: 1.5rem; }
+table { border-collapse: collapse; }
+th, td { border: 1px solid #8a8a8a; padding: 0.25rem 0.75rem; text-align: left; }
 caption { text-align: left; font-style: italic; padding-bottom: 0.25rem; }
-.absent { color: #777; }"""
+.absent { color: #6b6b6b; }"""
 
 # Refuses every remote fetch the document could otherwise be made to perform, so the page keeps
 # its offline promise even after someone edits it. Inline styles are the one exception, because
@@ -281,7 +351,7 @@ def _html_tools_table(report: Report) -> list[str]:
         return ["<p>No tools were recorded.</p>"]
     rows = [
         "<tr>"
-        f"<td>{_escape(s.tool)}</td>"
+        f'<th scope="row">{_escape(s.tool)}</th>'
         f"<td>{s.trials}</td>"
         f"<td>{_proportion(s.pass_at_1)}</td>"
         f"<td>{_escape(_interval(s.pass_at_1_interval))}</td>"
@@ -291,14 +361,17 @@ def _html_tools_table(report: Report) -> list[str]:
         for s in report.tools
     ]
     return [
+        '<div class="scroll">',
         "<table>",
         f"<caption>{_escape(_INTERVAL_METHODS)}</caption>",
-        "<thead><tr><th>Tool</th><th>Trials</th><th>pass@1</th><th>pass@1 interval</th>"
-        "<th>pass^n</th><th>pass^n interval</th></tr></thead>",
+        '<thead><tr><th scope="col">Tool</th><th scope="col">Trials</th>'
+        '<th scope="col">pass@1</th><th scope="col">pass@1 interval</th>'
+        '<th scope="col">pass^n</th><th scope="col">pass^n interval</th></tr></thead>',
         "<tbody>",
         *rows,
         "</tbody>",
         "</table>",
+        "</div>",
     ]
 
 
@@ -332,7 +405,7 @@ def _html_costs_table(report: Report) -> list[str]:
         return ["<p>No costs were computed: no tool was recorded.</p>"]
     rows = [
         '<tr class="cost">'
-        f"<td>{_escape(cost.tool)}</td>"
+        f'<th scope="row">{_escape(cost.tool)}</th>'
         f"<td>{cost.input_tokens}</td>"
         f"<td>{cost.output_tokens}</td>"
         f"<td>{cost.solved_tasks}</td>"
@@ -344,15 +417,18 @@ def _html_costs_table(report: Report) -> list[str]:
         for cost in report.costs
     ]
     return [
+        '<div class="scroll">',
         "<table>",
         f"<caption>{_escape(_price_provenance(report))}; {_escape(_COST_METHOD)}</caption>",
-        "<thead><tr><th>Tool</th><th>Input tokens</th><th>Output tokens</th>"
-        "<th>Solved tasks</th><th>Rates</th><th>Total</th><th>Per solved task</th>"
-        "<th>Basis</th></tr></thead>",
+        '<thead><tr><th scope="col">Tool</th><th scope="col">Input tokens</th>'
+        '<th scope="col">Output tokens</th><th scope="col">Solved tasks</th>'
+        '<th scope="col">Rates</th><th scope="col">Total</th>'
+        '<th scope="col">Per solved task</th><th scope="col">Basis</th></tr></thead>',
         "<tbody>",
         *rows,
         "</tbody>",
         "</table>",
+        "</div>",
     ]
 
 
@@ -362,7 +438,7 @@ def _html_trials_table(report: Report) -> list[str]:
         return ["<p>No trials were recorded.</p>"]
     rows = [
         '<tr class="trial">'
-        f"<td>{_escape(line.task_id)}</td>"
+        f'<th scope="row">{_escape(line.task_id)}</th>'
         f"<td>{_escape(line.outcome.value)}</td>"
         f"{_html_cell(line.repo_path)}"
         f"{_html_cell(line.commit_subject)}"
@@ -370,18 +446,20 @@ def _html_trials_table(report: Report) -> list[str]:
         for line in report.tasks
     ]
     return [
+        '<div class="scroll">',
         "<table>",
         f"<caption>{len(report.tasks)} recorded; {_TRIAL_LOG_CAPTION}</caption>",
-        "<thead><tr><th>Task</th><th>Outcome</th><th>Repo path</th>"
-        "<th>Commit subject</th></tr></thead>",
+        '<thead><tr><th scope="col">Task</th><th scope="col">Outcome</th>'
+        '<th scope="col">Repo path</th><th scope="col">Commit subject</th></tr></thead>',
         "<tbody>",
         *rows,
         "</tbody>",
         "</table>",
+        "</div>",
     ]
 
 
-def render_html(report: Report) -> str:
+def render_html(report: RedactedReport) -> str:
     """Render the single-page report: self-contained, offline, and honest above the fold.
 
     The page fetches nothing. No stylesheet, no font, no image, and a Content-Security-Policy
@@ -389,13 +467,31 @@ def render_html(report: Report) -> str:
     tell anybody that it was opened.
 
     Every caveat is a caption on the table it qualifies, escaped like every other string on
-    the page: there is no text here the document trusts.
+    the page: there is no text here the document trusts. The exception is the redaction
+    statement, which qualifies the whole document and so sits under the suite hash rather than
+    on any one table.
+
+    The viewport declaration is the page's only concession to a device: the report is one column
+    of wide tables, and without it a phone lays the document out at a desktop width and scales
+    the numbers down to unreadable. It fetches nothing and asks for nothing (ADR-0049).
+
+    Each table travels inside its own scroll container, which is a measurement concern rather
+    than a decorative one: unwrapped, a table wider than the screen drags the whole document
+    sideways, and the first screen of the scores then ends inside the pass@1 interval - the
+    flattering band on the page and the pass^n band that ranks off it. Every header cell names
+    its axis and the first cell of each row is the tool or task the row is about, so a number
+    read aloud arrives with both its column and its row.
+
+    Like :func:`render_text`, it takes a :data:`~assay.report.model.RedactedReport`: the
+    paragraph under the suite hash makes a claim about this page's own tokens, and the type of
+    the argument is what backs it (ADR-0058).
     """
     lines = [
         "<!DOCTYPE html>",
         '<html lang="en">',
         "<head>",
         '<meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
         f'<meta http-equiv="Content-Security-Policy" content="{_HTML_CSP}">',
         "<title>Assay report</title>",
         "<style>",
@@ -405,6 +501,7 @@ def render_html(report: Report) -> str:
         "<body>",
         "<h1>Assay report</h1>",
         f"<p>Suite: <code>{_escape(report.suite_hash)}</code></p>",
+        f'<p class="redaction">Redaction: {_escape(_REDACTION_STATEMENT)}</p>',
         "<h2>Tools</h2>",
         *_html_tools_table(report),
         "<h2>Comparisons</h2>",

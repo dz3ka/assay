@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 STEPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("lint", ("ruff", "check", ".")),
     ("format", ("ruff", "format", "--check", ".")),
-    ("typecheck", ("mypy", "--strict", "src", "tests")),
+    ("typecheck", ("mypy", "--strict", "src", "tests", "scripts")),
     ("tests", ("pytest", "-q")),
 )
 

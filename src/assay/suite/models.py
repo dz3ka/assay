@@ -53,7 +53,10 @@ class Task(SchemaModel):
 
     schema_version: Literal[1]
     task_id: str = Field(pattern=_TASK_ID_PATTERN)
-    # Never emitted unredacted: the redaction boundary that owns that is in the reporter.
+    # A declared origin URL or `root-commit:<sha>`, never a host path: this field is inside
+    # the body the suite's content address is a hash of, and a path would give one history a
+    # different address per directory it was mined from (ADR-0052). Never emitted unredacted
+    # either - the redaction boundary that owns that is in the reporter.
     repo_url: str
     base_commit: str = Field(pattern=_COMMIT_PATTERN)
     test_files: tuple[str, ...] = Field(min_length=1)

@@ -6,7 +6,10 @@ output formats) is an implementation detail, this surface is not.
 
 A report is redacted by default (SPEC §5.4): :func:`redact` is total and has no opt-out, so
 nothing a renderer receives carries a path, an identifier or a commit subject from the
-repository under evaluation.
+repository under evaluation. :func:`redact` is also the only function that mints a
+:data:`RedactedReport`, which is what :func:`render_text` and :func:`render_html` require -
+both print a sentence about the tokens on their own page, and the type is what makes that
+sentence true of every page they produce (ADR-0058).
 
 :func:`decide_verdict` is the only place in Assay that names a winner. When two pass^n
 intervals overlap it names none, and no renderer may re-derive one from the point estimates
@@ -26,6 +29,7 @@ from assay.report.model import (
     PairedTest,
     PriceTable,
     Redacted,
+    RedactedReport,
     Report,
     TaskLine,
     ToolCost,
@@ -52,6 +56,7 @@ __all__ = [
     "PairedTest",
     "PriceTable",
     "Redacted",
+    "RedactedReport",
     "RedactionPolicy",
     "Report",
     "TaskLine",
