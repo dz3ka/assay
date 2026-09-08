@@ -894,15 +894,22 @@ EXPECTED_YIELD: Final = MiningYield(
         }
     ),
 )
-"""What ``assay mine`` must report for this repository: 9 examined, 6 candidates, 2 accepted,
-and one commit under each of the seven rejection reasons - 2 + 7 = 9 partitions what was walked.
+"""What ``assay mine`` must report for this repository: 11 examined, 7 candidates, 2 accepted,
+and nine rejections spread across all eight rejection reasons - 2 + 9 = 11 partitions what was
+walked. ``NO_SOURCE_CHANGES`` carries two of the nine; each of the other seven carries one.
 
 Derived from :data:`FIXTURE_COMMITS` rather than typed out, so the table and the number cannot
 disagree; ``tests/mine/test_fixture_repo.py`` pins the derivation's result all the same, since
 a table edited without meaning to move the yield is the mistake CLAUDE.md forbids.
 
-The history holds eleven commits and the walk yields nine of them. The root has no parent and
-the merge has two, so ``GitHistory.commits`` never hands either to the miner; they are outside
-this accounting rather than reasons inside it, which is why there is no ``merge_commit``
-rejection to count (ADR-0015). Every one of the seven reasons has a walked commit behind it.
+The history holds thirteen commits and the walk yields eleven of them. The root has no parent
+and the merge has two, so ``GitHistory.commits`` never hands either to the miner; they are
+outside this accounting rather than reasons inside it, which is why there is no ``merge_commit``
+rejection to count (ADR-0015). Every one of the eight reasons has a walked commit behind it.
+
+The figures moved off M1's 9 examined, 6 candidates and seven reasons when M2 pinned the
+environment: ADR-0017's recorded debt came due and ``no_tests_executed`` split out of
+``still_red`` as the eighth reason, and ADR-0032 ratifies 11 examined, 7 candidates and 2
+accepted as this repository's expected yield. The prose above is a restatement of that decision,
+not a second source for it - read it back off :data:`EXPECTED_YIELD` before trusting it.
 """
