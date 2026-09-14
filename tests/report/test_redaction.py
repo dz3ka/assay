@@ -47,6 +47,10 @@ RAW_PATH = "/home/alice/acquisition-target/src/pricing/margin.py"
 RAW_SUBJECT = "fix margin rounding for the Northwind contract"
 RAW_TASK_ID = "pricing-margin-rounding-4f21a9"
 
+# A task the run could not provision. It has no trials, so this id appears in the document only
+# on the coverage line - which makes that line the one place it could leave unhashed (ADR-0070).
+RAW_UNPROVISIONED_TASK_ID = "pricing-vat-threshold-9c04be"
+
 # The reader's own words about the reader's own prices. Not repo-derived, and deliberately not
 # a real rate card: no price anybody could mistake for a maintained figure is written down in
 # this repository (ADR-0046).
@@ -127,6 +131,9 @@ def _populated_report() -> Report:
                 outcome=Outcome.FAILED,
             ),
         ),
+        suite_tasks=3,
+        measured_tasks=2,
+        unprovisioned_tasks=(RAW_UNPROVISIONED_TASK_ID,),
     )
 
 
@@ -285,6 +292,7 @@ def test_the_raw_values_are_absent_from_the_serialised_report() -> None:
     assert RAW_PATH not in dumped
     assert RAW_SUBJECT not in dumped
     assert RAW_TASK_ID not in dumped
+    assert RAW_UNPROVISIONED_TASK_ID not in dumped
     assert "alice" not in dumped
     assert "Northwind" not in dumped
 
@@ -306,6 +314,41 @@ def test_redaction_agrees_with_the_token_function_field_by_field() -> None:
     assert line.task_id == hash_token(policy, "ident", RAW_TASK_ID)
     assert line.repo_path == hash_token(policy, "path", RAW_PATH)
     assert line.commit_subject == hash_token(policy, "message", RAW_SUBJECT)
+
+
+def test_an_unprovisioned_id_gets_the_token_a_trial_line_for_it_would_get() -> None:
+    # Same kind, so the same task is the same string wherever the document names it. That is
+    # what lets a reader check the task the run could not measure against the trial log and
+    # confirm it is absent from it - a token that differed by section would prove nothing, and
+    # a raw id here would leave the one task with no trials as the one with a name (ADR-0070).
+    policy = _policy(0x11)
+    report = _populated_report()
+    # The same raw id, carried once as a task the run measured: this is the comparison a
+    # reader makes across the two sections, performed here against the real redaction path.
+    as_a_trial = report.model_copy(
+        update={
+            "tasks": (report.tasks[0].model_copy(update={"task_id": RAW_UNPROVISIONED_TASK_ID}),)
+        }
+    )
+
+    (unprovisioned,) = redact(report, policy).unprovisioned_tasks
+    (line,) = redact(as_a_trial, policy).tasks
+
+    assert unprovisioned == line.task_id
+    assert unprovisioned == hash_token(policy, "ident", RAW_UNPROVISIONED_TASK_ID)
+    assert TOKEN.match(unprovisioned)
+
+
+def test_the_coverage_counts_survive_redaction_unchanged() -> None:
+    # The numbers are the finding, like the scores beside them: a denominator is not
+    # repo-derived text and a hashed one would delete the claim rather than protect it.
+    report = _populated_report()
+
+    redacted = redact(report, _policy(0x11))
+
+    assert redacted.suite_tasks == 3
+    assert redacted.measured_tasks == 2
+    assert len(redacted.unprovisioned_tasks) == len(report.unprovisioned_tasks)
 
 
 def test_the_findings_survive_redaction_unchanged() -> None:

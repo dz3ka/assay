@@ -25,6 +25,7 @@ from assay.mine.models import NodeId
 from assay.mine.models import TestReport as Report
 from assay.mine.models import TestStatus as Status
 from assay.mine.protocols import TestRunner as Runner
+from assay.mine.protocols import Unprovisioned
 from assay.sandbox import (
     VENV_PYTHON,
     WORKSPACE_DIR,
@@ -83,7 +84,9 @@ def _runner(trial: tuple[Path, str], out_root: Path) -> Runner:
     """The runner under test, made the way production will make it - through the factory."""
     workspace, tag = trial
     made = sandbox_runner_for(tag, limits=TRIAL_LIMITS, out_root=out_root)(workspace)
-    assert made is not None, "a sandbox runner has nothing to provision and cannot decline"
+    assert not isinstance(made, Unprovisioned), (
+        "a sandbox runner has nothing to provision and cannot decline"
+    )
     return made
 
 

@@ -30,6 +30,14 @@ it asserts: one report rendered twice shares the sentence and no token. The sent
 so both prose formats take a :data:`~assay.report.RedactedReport` and a static negative below
 pins that they still reject a report nobody redacted (ADR-0058) - which is why the helpers in
 this file, which build unredacted reports on purpose, have to say so at every call.
+
+The fifth is the denominator (CLAUDE.md: report yield, never the numerator alone). A run that
+measured twelve of thirteen tasks may not be rendered as a run of twelve, so both prose formats
+carry a coverage line above the numbers and name every task that was not provisioned - and they
+carry it when nothing was missed too, because a section that appeared only when it had bad news
+in it would make its absence the report's way of saying something (ADR-0035, ADR-0070). A file
+with tasks that are neither measured nor unprovisioned gets them counted on that line and given
+no cause, because the file cannot tell a run still writing from one that stopped.
 """
 
 import html
@@ -68,6 +76,7 @@ from assay.report.render import (
     _INTERVAL_METHODS,
     _NO_PRICES,
     _REDACTION_STATEMENT,
+    _coverage_statement,
 )
 from assay.results import Outcome, read_result_set
 
@@ -96,6 +105,10 @@ SECRET_PATH = "src/secret_module.py"
 SECRET_IDENT = "AcmeInternalClient"
 SECRET_SUBJECT = "fix ACME-1234 auth bypass"
 SENTINELS = (SECRET_PATH, SECRET_IDENT, SECRET_SUBJECT)
+
+# The task a run could not provision, named on the coverage line and nowhere else in the
+# document: it has no trials, so the trial log cannot mention it (ADR-0068).
+UNPROVISIONED_IDENT = "AcmeUnbuildableTask"
 
 # Prices are the reader's, never Assay's, and never this repository's: no rate anybody could
 # mistake for a maintained figure goes into a file here (ADR-0046). A hundred and two hundred
@@ -192,6 +205,49 @@ def _seeded_report() -> RedactedReport:
                     outcome=Outcome.PASSED,
                 ),
             ),
+            suite_tasks=1,
+            measured_tasks=1,
+            unprovisioned_tasks=(),
+        )
+    )
+
+
+def _short_report() -> RedactedReport:
+    """A thirteen-task suite of which twelve were measured, unredacted.
+
+    The shape of the live `jd/tenacity` run that forced ADR-0067: one task's image would not
+    build, so it has no trials anywhere in the document and every rate on the page is over the
+    other twelve. The trial log is one line, because what this helper exists to exercise is the
+    coverage header rather than the table under it.
+    """
+    # Unredacted on purpose: the tests below read the unprovisioned id back off the page.
+    return RedactedReport(
+        Report(
+            suite_hash=SUITE_HASH,
+            tools=(
+                ToolSummary(
+                    tool="ground-truth",
+                    trials=1,
+                    pass_at_1=1.0,
+                    pass_at_1_interval=Interval(low=1.0, high=1.0),
+                    pass_caret_n=1.0,
+                    pass_caret_n_interval=Interval(low=0.75, high=1.0),
+                ),
+            ),
+            comparisons=(),
+            costs=(),
+            prices_source=None,
+            tasks=(
+                TaskLine(
+                    task_id="measured-task",
+                    repo_path=None,
+                    commit_subject=None,
+                    outcome=Outcome.PASSED,
+                ),
+            ),
+            suite_tasks=13,
+            measured_tasks=12,
+            unprovisioned_tasks=(UNPROVISIONED_IDENT,),
         )
     )
 
@@ -207,6 +263,9 @@ def _empty_report() -> RedactedReport:
             costs=(),
             prices_source=None,
             tasks=(),
+            suite_tasks=0,
+            measured_tasks=0,
+            unprovisioned_tasks=(),
         )
     )
 
@@ -405,6 +464,201 @@ def test_the_html_report_states_the_redaction_under_the_suite_line() -> None:
 
     assert separator
     assert below_suite.startswith(f'<p class="redaction">Redaction: {statement}</p>')
+
+
+@pytest.mark.parametrize(("fmt", "render"), PROSE_RENDERERS)
+def test_a_prose_report_states_what_it_measured_out_of_what(fmt: str, render: Renderer) -> None:
+    # The denominator, on the page, in both formats a human reads. Twelve tasks' rates printed
+    # under a heading that never says thirteen were asked for is the numerator alone, which
+    # CLAUDE.md forbids by name - and the one task missing is exactly the one a reader would
+    # otherwise have to take on trust was never there.
+    report = _short_report()
+
+    readable = _readable(fmt, render(report))
+
+    assert _coverage_statement(report) in readable
+    assert "12 of 13" in readable
+    assert UNPROVISIONED_IDENT in readable
+
+
+@pytest.mark.parametrize(("fmt", "render"), PROSE_RENDERERS)
+def test_a_prose_report_states_its_coverage_when_nothing_was_missed(
+    fmt: str, render: Renderer
+) -> None:
+    # The complete run says so rather than saying nothing. A coverage line that appeared only
+    # when a task was missing would make its absence the report's way of claiming completeness,
+    # which is the unexplained blank ADR-0035 refuses - the same rule the costs section follows.
+    report = _fixture_report("results_disjoint.json")
+
+    readable = _readable(fmt, render(report))
+
+    assert report.unprovisioned_tasks == ()
+    assert _coverage_statement(report) in readable
+    assert "5 of 5" in readable
+
+
+def test_the_text_report_states_the_coverage_in_its_header() -> None:
+    # In the header block with the suite hash and the redaction sentence, above every number,
+    # for the reason the redaction line is there: a denominator met after the trial log is a
+    # denominator for a document the reader has already finished.
+    report = _short_report()
+
+    title, suite, redaction, coverage = render_text(report).splitlines()[:4]
+
+    assert title == "Assay report"
+    assert suite.startswith("Suite: ")
+    assert redaction == f"Redaction: {_REDACTION_STATEMENT}"
+    assert coverage == f"Coverage: {_coverage_statement(report)}"
+
+
+def test_the_html_report_states_the_coverage_under_the_redaction_line() -> None:
+    # Escaped like every other string on the page, and in document order directly after the
+    # sentence about the tokens it is about to print one of.
+    report = _short_report()
+    out = render_html(report)
+
+    _, separator, below_redaction = out.partition('<p class="redaction">')
+    statement = html.escape(_coverage_statement(report), quote=True)
+
+    assert separator
+    assert below_redaction.splitlines()[1] == f'<p class="coverage">Coverage: {statement}</p>'
+
+
+def test_the_html_coverage_line_escapes_a_task_id_like_every_other_string() -> None:
+    # A task id is repo-derived text before redaction and a token after it, and the page trusts
+    # neither: an id carrying markup reaches the file escaped or the report is an injection.
+    report = _short_report()
+    forged = report.model_copy(update={"unprovisioned_tasks": ("<script>alert(1)</script>",)})
+
+    out = render_html(RedactedReport(forged))
+
+    assert "<script>" not in out
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in out
+
+
+def test_the_json_document_carries_the_coverage_as_numbers_without_the_sentence() -> None:
+    # Three fields, no prose: the fourth sentence written for a human and kept out of the
+    # schema, for the reason the other three are (ADR-0008). A consumer reads the counts.
+    report = _short_report()
+
+    out = render_json(report)
+    document = json.loads(out)
+
+    assert document["suite_tasks"] == 13
+    assert document["measured_tasks"] == 12
+    assert document["unprovisioned_tasks"] == [UNPROVISIONED_IDENT]
+    assert _coverage_statement(report) not in out
+    assert "Coverage" not in out
+
+
+def test_a_redacted_report_names_its_unprovisioned_tasks_as_tokens() -> None:
+    # The coverage line is the one place a task with no trials is named, so it is also a place
+    # a raw identifier could leave the machine. It is hashed under the same kind as a trial
+    # line's id, which is what lets a reader check the missing task against the log (ADR-0070).
+    redacted = redact(_short_report(), RedactionPolicy(salt=bytes([7]) * 32))
+
+    for render_one in (render_text, render_html, render_json):
+        assert UNPROVISIONED_IDENT not in render_one(redacted)
+
+
+def _partial_report(suite: int, measured: int, unprovisioned: tuple[str, ...]) -> RedactedReport:
+    """The short report with its coverage counts replaced, leaving tasks the file says nothing of.
+
+    ``ResultSet._check_coverage`` compares with ``<=``, so a result set written after every task
+    (ADR-0069) can hold fewer measured and unprovisioned tasks than its suite. Copied rather than
+    rebuilt because only the three coverage fields are under test here.
+    """
+    report = _short_report().model_copy(
+        update={
+            "suite_tasks": suite,
+            "measured_tasks": measured,
+            "unprovisioned_tasks": unprovisioned,
+        }
+    )
+    # Unredacted on purpose, like the report it was copied from.
+    return RedactedReport(report)
+
+
+# The clause a partial file adds to its coverage line, and every word the renderer could reach for
+# to explain the remainder without knowing it. A file with tasks missing may be a run in progress,
+# a run that was killed, or a run whose writer crashed; the file is the same in all three.
+_REMAINDER = "no result and no recorded failure in this file"
+_CAUSES = ("in progress", "interrupted", "failed", "killed", "pending", "crashed")
+
+
+@pytest.mark.parametrize(
+    ("unprovisioned", "expected"),
+    [
+        ((UNPROVISIONED_IDENT,), f"; 3 have {_REMAINDER}"),
+        ((), f"; 4 have {_REMAINDER}"),
+    ],
+    ids=["with-unprovisioned", "none-unprovisioned"],
+)
+@pytest.mark.parametrize(("fmt", "render"), PROSE_RENDERERS)
+def test_a_run_in_progress_counts_the_tasks_the_file_says_nothing_about(
+    fmt: str, render: Renderer, unprovisioned: tuple[str, ...], expected: str
+) -> None:
+    # Five tasks in the suite, one measured: the gap is whatever neither count accounts for. Left
+    # unsaid, "1 of 5 tasks measured" beside the unprovisioned would let a reader add the two
+    # numbers up and take the difference as nothing, which is absence doing the work of a claim
+    # (ADR-0070). Both branches of the sentence carry it, because a partial file can have had no
+    # unprovisioned task yet as easily as one.
+    report = _partial_report(5, 1, unprovisioned)
+
+    readable = _readable(fmt, render(report))
+
+    assert _coverage_statement(report).endswith(expected)
+    assert f"Coverage: {_coverage_statement(report)}" in readable
+
+
+def test_a_single_missing_task_reads_has() -> None:
+    report = _partial_report(13, 12, ())
+
+    assert _coverage_statement(report) == (
+        f"12 of 13 tasks measured; none were left unprovisioned; 1 has {_REMAINDER}"
+    )
+
+
+def test_a_complete_run_prints_no_remainder_clause() -> None:
+    # Byte-identical to the sentence before the gap was counted, in both branches: a clause that
+    # printed "0 have ..." on every finished run would be noise a reader learns to skip, which
+    # would teach them to skip it on the run where it is not zero.
+    complete = _fixture_report("results_disjoint.json")
+    short = _short_report()
+
+    assert _coverage_statement(complete) == "5 of 5 tasks measured; none were left unprovisioned"
+    assert _coverage_statement(short) == (
+        "12 of 13 tasks measured; 1 could not be provisioned and so appears in no number on this "
+        f"page: {UNPROVISIONED_IDENT}"
+    )
+    for report in (complete, short):
+        for render_one in (render_text, render_html):
+            assert "no recorded failure" not in render_one(report)
+
+
+@pytest.mark.parametrize("unprovisioned", [(UNPROVISIONED_IDENT,), ()])
+def test_the_remainder_clause_names_no_cause(unprovisioned: tuple[str, ...]) -> None:
+    # The file cannot tell a run still writing from one that stopped, so the sentence may only
+    # count what the file does not say. Any cause named here would be a guess printed as a fact.
+    statement = _coverage_statement(_partial_report(5, 1, unprovisioned)).lower()
+
+    assert _REMAINDER in statement
+    for cause in _CAUSES:
+        assert cause not in statement
+
+
+def test_render_json_gains_no_coverage_key() -> None:
+    # The gap is arithmetic over three fields the document already carries, so a consumer
+    # computes it; a key holding it would be a fourth field saying nothing the three do not.
+    partial = _partial_report(5, 1, (UNPROVISIONED_IDENT,))
+
+    out = render_json(partial)
+    document = json.loads(out)
+
+    assert set(document) == set(json.loads(render_json(_short_report())))
+    assert set(document) == set(Report.model_fields)
+    assert _REMAINDER not in out
+    assert Report.model_validate(document) == partial
 
 
 def test_the_html_report_declares_a_viewport() -> None:

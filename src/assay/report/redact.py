@@ -125,7 +125,15 @@ def redact(report: Report, policy: RedactionPolicy) -> RedactedReport:
     ``tools``, ``comparisons``, ``costs`` and ``prices_source`` are carried across unchanged:
     they hold tool names, scores, intervals, and the money the reader priced the run with,
     which are what the report is for. See this module's docstring for why that is a decision
-    rather than an omission.
+    rather than an omission. The two coverage counts join them, for the same reason the scores
+    do: a denominator is not repo-derived text, and hashing it would delete the claim rather
+    than protect it.
+
+    ``unprovisioned_tasks`` is hashed under ``"ident"``, the kind :func:`_redact_task_line`
+    gives a trial line's id, so one task is one string wherever the document names it - which
+    is what lets a reader check the task that could not be measured against the trial log and
+    confirm it is absent from it. It is the one place a task with no trials anywhere in the
+    report is named, and so the one place its raw id could leave the machine (ADR-0070).
 
     The return type is the whole guarantee behind the sentence the prose renderers print. This
     is the only function that mints a :data:`~assay.report.model.RedactedReport`, so a page
@@ -140,5 +148,10 @@ def redact(report: Report, policy: RedactionPolicy) -> RedactedReport:
             costs=report.costs,
             prices_source=report.prices_source,
             tasks=tuple(_redact_task_line(line, policy) for line in report.tasks),
+            suite_tasks=report.suite_tasks,
+            measured_tasks=report.measured_tasks,
+            unprovisioned_tasks=tuple(
+                hash_token(policy, "ident", tid) for tid in report.unprovisioned_tasks
+            ),
         )
     )

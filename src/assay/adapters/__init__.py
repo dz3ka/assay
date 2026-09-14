@@ -11,17 +11,26 @@ anything (SPEC §9). M3's real adapters are drivers over an injected seam - a
 declared here and bound in :mod:`assay.cli.main`. The seams are what keep ``adapters``, and
 therefore ``score``, free of every process and every socket: the implementations live in
 ``host``, which nothing on this side of the line imports (ADR-0036).
+
+Two adapter *names* are exported beside the classes, which no other adapter needs: the naive
+baseline answers to both of them (``NAIVE_NAME`` metered, ``LOCAL_NAME`` on this machine), so
+the name is a constructor argument rather than a class attribute a caller could read off. The
+CLI reads both - it offers them as two rows of ``--adapter`` and its refusal rule treats them
+differently (ADR-0060) - and it reads them from here, because the submodule layout is an
+implementation detail on this side of the line too.
 """
 
 from assay.adapters.agentic import AgenticCliAdapter
 from assay.adapters.ground_truth import GroundTruthAdapter
 from assay.adapters.model import ModelResponse, ModelTransport, ModelTransportError
-from assay.adapters.naive import NaiveBaselineAdapter
+from assay.adapters.naive import LOCAL_NAME, NAIVE_NAME, NaiveBaselineAdapter
 from assay.adapters.null import NullAdapter
 from assay.adapters.process import ProcessOutput, ToolProcess
 from assay.adapters.protocol import Adapter
 
 __all__ = [
+    "LOCAL_NAME",
+    "NAIVE_NAME",
     "Adapter",
     "AgenticCliAdapter",
     "GroundTruthAdapter",

@@ -48,5 +48,5 @@ def test_the_readme_quotes_the_fixture_yield_the_miner_actually_reports() -> Non
     ) in readme
     assert (
         f"{EXPECTED_YIELD.candidates} candidates reached the gate, "
-        f"{EXPECTED_YIELD.unprovisioned} unprovisioned"
+        f"{len(EXPECTED_YIELD.unprovisioned)} unprovisioned"
     ) in readme

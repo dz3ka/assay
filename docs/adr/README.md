@@ -57,7 +57,7 @@ capability the code does not have is a defect, not a roadmap.
 | [0012](0012-the-task-id-pattern-is-spelled-twice.md) | The mined-task-id pattern is spelled twice, and a drift test licenses it | Accepted · applies 0011 |
 | [0013](0013-mining-runs-on-the-host-in-m1.md) | Mining runs the target repository on the host, and M1 accepts the exposure | Accepted |
 | [0014](0014-revalidation-compares-recorded-sets-both-ways.md) | Revalidation is strict in both directions, and the yield partition lives in the model | Accepted · applies 0011 |
-| [0015](0015-a-rejection-reason-must-be-reachable.md) | A rejection reason must be reachable by the walk; merges are excluded, not rejected | Accepted |
+| [0015](0015-a-rejection-reason-must-be-reachable.md) | A rejection reason must be reachable by the walk; merges are excluded, not rejected | Accepted · amended by 0073 |
 | [0016](0016-a-below-floor-test-timeout-is-refused-not-floored.md) | A below-floor `--test-timeout-s` is refused at the argument surface, not floored silently | Accepted · applies 0007 |
 | [0017](0017-still-red-stays-merged-until-m2-pins-the-environment.md) | `still_red` conflates "the fix did not work" with "no test ran", and stays merged until M2 | Accepted · applies 0015 |
 | [0018](0018-provisioning-installs-the-runtime-set-and-pytest.md) | Provisioning installs the project's runtime set plus pytest, and no extras or groups | Accepted · applies 0013 |
@@ -84,7 +84,7 @@ capability the code does not have is a defect, not a roadmap.
 | [0039](0039-claude-code-runs-inside-the-container.md) | The agentic tool is Claude Code, it runs inside the container, and the shared model family is flagged | Accepted · applies 0006 and 0038 |
 | [0040](0040-the-naive-adapter-strips-one-enclosing-fence.md) | The naive baseline strips one enclosing code fence, and the repair is on the record | Accepted · applies 0003 |
 | [0041](0041-the-default-model-is-claude-sonnet-5.md) | The default model is `claude-sonnet-5`, and nothing has been measured on either side of the change | Accepted |
-| [0042](0042-the-readme-withdraws-the-promise-of-a-live-run.md) | The README withdraws its promise of a live run, and M4 ships machinery only | Accepted |
+| [0042](0042-the-readme-withdraws-the-promise-of-a-live-run.md) | The README withdraws its promise of a live run, and M4 ships machinery only | Accepted · amended by 0072 |
 | [0043](0043-pass-at-1-is-a-percentile-bootstrap-over-tasks.md) | pass@1's band is a percentile bootstrap over tasks, drawn with `random()` from a fixed seed | Accepted · amends 0035 |
 | [0044](0044-the-paired-test-is-exact-mcnemar-on-pass-caret-n.md) | The paired test is exact McNemar on pass^n, and a significant p never names a winner | Accepted · applies 0005 and 0004 |
 | [0045](0045-a-claim-carries-its-verification-inline.md) | A claim written into a brief carries its verification inline | Accepted |
@@ -101,3 +101,18 @@ capability the code does not have is a defect, not a roadmap.
 | [0056](0056-the-unbuilt-command-machinery-is-deleted-and-exit-code-3-is-retired.md) | The unbuilt-command machinery is deleted and exit code 3 is retired at the freeze | Accepted · discharges 0047 |
 | [0057](0057-the-page-declares-its-canvas-and-scrolls-per-table.md) | The report page declares its canvas, scrolls per table, and wraps rather than truncates | Accepted · applies 0049 |
 | [0058](0058-the-prose-renderers-take-a-redacted-report.md) | The prose renderers take a redacted report, so the sentence they print is backed by a type | Accepted · applies 0049 and 0009 |
+| [0059](0059-a-local-model-gets-its-own-transport-not-a-wider-allowlist.md) | A model on this machine gets its own transport, not a wider allowlist | Accepted · applies 0036, extends 0006 |
+| [0060](0060-the-local-baseline-is-exempt-and-does-not-discharge-the-rule.md) | The local baseline is exempt from the baseline rule, and does not discharge it | Accepted |
+| [0061](0061-the-local-baseline-is-the-substitute-adr-0051-rejected.md) | The local baseline is the substitute ADR-0051 rejected, named, over a constant endpoint | Accepted · amends 0051, applies 0059 |
+| [0062](0062-the-build-context-is-a-standalone-checkout-the-workspace-is-not.md) | The image build context is a standalone checkout; the trial workspace stays a worktree | Accepted · amends 0025, applies 0027 and 0052 |
+| [0063](0063-what-the-context-excludes-and-its-history-enter-the-address.md) | What the build context excludes, and what history it carries, enter the image's address | Accepted · applies 0062 and 0007 |
+| [0064](0064-the-measurement-image-carries-a-pinned-git.md) | The measurement image carries a pinned `git`, and the recipe says which one | Accepted · applies 0062 and 0063, amends 0021 |
+| [0065](0065-a-throwaway-clone-writes-no-reflog-and-keeps-no-origin.md) | A throwaway clone writes no reflog and keeps no origin, and byte-identity across hosts is not on offer | Accepted · amends 0062, applies 0052 |
+| [0066](0066-the-provisioning-asymmetry-gets-a-milestone-not-a-deferral.md) | The provisioning asymmetry gets a milestone of its own, sequenced after the pre-registered run | Accepted · amends 0053, applies 0025 and 0026 · amended by 0073 |
+| [0067](0067-the-result-set-carries-its-own-denominator-and-names-what-it-could-not-measure.md) | The result set carries its own denominator and names the tasks it could not measure | Accepted · applies 0011, extends 0007 |
+| [0068](0068-one-unprovisioned-state-for-both-causes-and-a-partial-task-is-discarded-whole.md) | One `unprovisioned` state for both causes, and a task that fails partway is discarded whole | Accepted · applies 0067 and 0027 |
+| [0069](0069-the-result-set-is-written-after-every-task.md) | The result set is written after every task, and the objection to that is answered rather than dropped | Accepted · applies 0067, amends the write-once rule |
+| [0070](0070-the-report-publishes-its-coverage-and-names-what-it-could-not-measure.md) | The report publishes its coverage on every render, and the unprovisioned tasks are tokens like every other identifier | Accepted · applies 0067 and 0009, extends 0058 |
+| [0071](0071-the-setuptools-floor-is-declined-and-the-builds-it-would-have-rescued-are-reported.md) | The `setuptools` floor is declined for good, and the two builds it would have rescued are reported rather than patched | Accepted · closes a question 0025 left open, applies 0062 and 0070 |
+| [0072](0072-a-premise-of-adr-0042-is-overtaken-and-the-rule-stands.md) | Two premises of ADR-0042 are overtaken by the local baseline's run, and its rule stands | Accepted · amends 0042 and 0055, applies 0060 and 0061 |
+| [0073](0073-one-unprovisioned-shape-the-mine-names-its-commits-as-the-run-names-its-tasks.md) | One `unprovisioned` shape: the mine names its commits and their reasons, as the run names its tasks | Accepted · amends 0015 and 0066, applies 0067 and 0068 |

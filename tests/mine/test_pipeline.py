@@ -29,6 +29,7 @@ from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from assay.host import GitHistory, PytestHostRunner, provision_venv
 from assay.mine import (
@@ -37,11 +38,13 @@ from assay.mine import (
     GateRejection,
     MinedCommit,
     RunnerFactory,
+    Unprovisioned,
     decide_gate,
     mine_suite,
     pytest_selectors,
     revalidate_suite,
     revalidates,
+    run_gate,
     split_changes,
     tally_yield,
 )
@@ -108,8 +111,12 @@ _ORDINARY_TEST = "tests/test_widget.py"
 _ORDINARY_SOURCE = "src/widget.py"
 _STUB_TARGET = "tests/test_widget.py::test_widget"
 
+# What the stub host wiring says when it refuses a workspace - the shape of the sentence
+# `assay.host.EnvironmentSetupError` carries, and nothing a real install printed.
+_NO_ENVIRONMENT = "uv pip install -e . failed: no pyproject.toml at this commit"
 
-def _runner_for(workspace: Path) -> Runner | None:
+
+def _runner_for(workspace: Path) -> Runner | Unprovisioned:
     """The host wiring the miner is handed: an environment, then a runner that uses it.
 
     This is the whole of what ``assay.mine`` does not know. The workspace is a worktree the
@@ -118,14 +125,14 @@ def _runner_for(workspace: Path) -> Runner | None:
     return PytestHostRunner(provision_venv(workspace, timeout_s=_PROVISION_TIMEOUT_S))
 
 
-def _no_environment(workspace: Path) -> Runner | None:
+def _no_environment(workspace: Path) -> Runner | Unprovisioned:
     """The host wiring for a workspace that cannot be provisioned - what a real repository's
     pre-packaging history looks like once the CLI has caught ``EnvironmentSetupError``.
 
     A stub rather than a genuinely unprovisionable commit: the only honest real witness would
     be a ``uv pip install`` that fails, which means a network-dependent install in CI.
     """
-    return None
+    return Unprovisioned(_NO_ENVIRONMENT)
 
 
 def _history(tmp_path: Path) -> GitHistory:
@@ -143,6 +150,16 @@ def _outcome(rejection: GateRejection | None) -> GateOutcome:
     return GateOutcome(rejection=rejection, fail_to_pass=targets, pass_to_pass=())
 
 
+def _mined(outcome: GateOutcome | Unprovisioned, index: int) -> MinedCommit:
+    """One examined commit carrying ``outcome``, under a sha no other ``index`` shares.
+
+    The task is left out even for an accepting outcome: :func:`tally_yield` counts verdicts and
+    names unprovisioned commits, and reads nothing else off the commit.
+    """
+    sha = f"{index:040x}"
+    return MinedCommit(CommitRef(sha=sha, parent=_STUB_PARENT, subject=f"c{index}"), outcome, None)
+
+
 def test_mining_the_fixture_repository_reports_exactly_the_expected_yield(tmp_path: Path) -> None:
     mined: list[MinedCommit] = list(
         mine_suite(
@@ -154,7 +171,7 @@ def test_mining_the_fixture_repository_reports_exactly_the_expected_yield(tmp_pa
         )
     )
 
-    tallied = tally_yield(found.outcome for found in mined)
+    tallied = tally_yield(mined)
 
     assert tallied.commits_examined == EXPECTED_YIELD.commits_examined
     assert tallied.candidates == EXPECTED_YIELD.candidates
@@ -164,12 +181,14 @@ def test_mining_the_fixture_repository_reports_exactly_the_expected_yield(tmp_pa
     assert dict(tallied.rejected) == dict(EXPECTED_YIELD.rejected)
     assert set(tallied.rejected) == set(GateRejection)
     # Every fixture commit reached a verdict: the host wiring provisioned all nine.
-    assert tallied.unprovisioned == 0
+    assert dict(tallied.unprovisioned) == {}
 
     # Each reason reached by the commit built to reach it, which is the claim the totals alone
     # would not make.
     assert {
-        found.commit.sha: found.outcome.rejection for found in mined if found.outcome is not None
+        found.commit.sha: found.outcome.rejection
+        for found in mined
+        if isinstance(found.outcome, GateOutcome)
     } == {commit.sha: commit.rejection for commit in FIXTURE_COMMITS if commit.walked}
 
     # And what an accepted commit hands on: exactly one task, checked out at the parent.
@@ -180,7 +199,7 @@ def test_mining_the_fixture_repository_reports_exactly_the_expected_yield(tmp_pa
     for found in accepted:
         task, outcome = found.task, found.outcome
         assert task is not None
-        assert outcome is not None
+        assert isinstance(outcome, GateOutcome)
         # SPEC §3 step 2: a task is the repository as it stood *before* the fix.
         assert task.base_commit == found.commit.parent
         assert task.task_id == f"{_REPO_SLUG}-{found.commit.sha[:12]}"
@@ -213,7 +232,7 @@ def test_the_broken_conftest_commit_runs_no_test_at_either_end_of_the_gate(
     with history.worktree(commit.parent) as workspace:
         assert history.apply_patch(workspace, test_patch)
         runner = _runner_for(workspace)
-        assert runner is not None
+        assert not isinstance(runner, Unprovisioned)
         red = runner.run(workspace, selectors, timeout_s=_RUN_TIMEOUT_S)
         assert history.apply_patch(workspace, ground_truth_patch)
         green = runner.run(workspace, selectors, timeout_s=_RUN_TIMEOUT_S)
@@ -243,7 +262,7 @@ def test_a_task_that_still_goes_red_to_green_revalidates(tmp_path: Path) -> None
 
     [(task, outcome)] = revalidated
     assert task.task_id == suite.tasks[0].task_id
-    assert outcome is not None
+    assert isinstance(outcome, GateOutcome)
     assert outcome.fail_to_pass == (_MEAN_OF_EMPTY_TARGET,)
     # The claim `assay validate` makes is this one, not `rejection is None`: the gate accepted
     # *and* it crossed the sets the suite recorded.
@@ -253,7 +272,9 @@ def test_a_task_that_still_goes_red_to_green_revalidates(tmp_path: Path) -> None
 def test_a_yield_reports_every_reason_including_the_ones_that_did_not_fire() -> None:
     # A sparse mapping would make "this reason never fired" and "this reason was not looked
     # for" the same document, which is the confusion ADR-0015 exists to end.
-    tallied = tally_yield([_outcome(None), _outcome(GateRejection.ALREADY_GREEN)])
+    tallied = tally_yield(
+        [_mined(_outcome(None), 1), _mined(_outcome(GateRejection.ALREADY_GREEN), 2)]
+    )
 
     assert set(tallied.rejected) == set(GateRejection)
     assert len(tallied.rejected) == 8
@@ -291,7 +312,7 @@ def test_only_a_commit_that_reached_the_gate_counts_as_a_candidate(
 ) -> None:
     # The three reasons decided on the diff alone are examined but never run, so counting them
     # as candidates would overstate how much of the history was actually put to the test.
-    tallied = tally_yield([_outcome(rejection)])
+    tallied = tally_yield([_mined(_outcome(rejection), 1)])
 
     assert tallied.commits_examined == 1
     assert tallied.candidates == int(counts_as_candidate)
@@ -315,9 +336,10 @@ def test_a_workspace_that_cannot_be_provisioned_does_not_stop_the_walk(tmp_path:
     assert len(mined) == EXPECTED_YIELD.commits_examined
     # The three reasons settled before a runner is ever asked for still stand; everything that
     # would have needed an environment has no verdict at all, and no task either.
-    assert [found.outcome is None for found in mined].count(True) == 7
+    assert [isinstance(found.outcome, Unprovisioned) for found in mined].count(True) == 7
     assert all(found.task is None for found in mined)
-    assert {found.outcome.rejection for found in mined if found.outcome is not None} == {
+    decided = [found.outcome for found in mined if isinstance(found.outcome, GateOutcome)]
+    assert {outcome.rejection for outcome in decided} == {
         GateRejection.NO_TEST_CHANGES,
         GateRejection.NO_SOURCE_CHANGES,
         GateRejection.PATCH_DID_NOT_APPLY,
@@ -327,10 +349,16 @@ def test_a_workspace_that_cannot_be_provisioned_does_not_stop_the_walk(tmp_path:
 def test_a_commit_with_no_environment_is_examined_but_is_not_a_candidate() -> None:
     # Not a rejection reason and not an abort: a third population, counted beside the seven
     # the way ADR-0015 counts merges outside them.
-    tallied = tally_yield([None, _outcome(None), _outcome(GateRejection.NO_TEST_CHANGES)])
+    tallied = tally_yield(
+        [
+            _mined(Unprovisioned(_NO_ENVIRONMENT), 1),
+            _mined(_outcome(None), 2),
+            _mined(_outcome(GateRejection.NO_TEST_CHANGES), 3),
+        ]
+    )
 
     assert tallied.commits_examined == 3
-    assert tallied.unprovisioned == 1
+    assert len(tallied.unprovisioned) == 1
     assert tallied.candidates == 1
     assert tallied.accepted == 1
 
@@ -338,8 +366,59 @@ def test_a_commit_with_no_environment_is_examined_but_is_not_a_candidate() -> No
 def test_the_fixture_yield_is_a_partition_with_nothing_unprovisioned() -> None:
     # SPEC §9's expected yield is a true statement about a repository every commit of which
     # can be provisioned, and stays one now that a third population exists.
-    assert EXPECTED_YIELD.unprovisioned == 0
+    assert dict(EXPECTED_YIELD.unprovisioned) == {}
     assert EXPECTED_YIELD.accepted + sum(EXPECTED_YIELD.rejected.values()) == 11
+
+
+def test_tally_keys_unprovisioned_by_sha_and_keeps_the_reason() -> None:
+    # The yield names what it could not measure, as a result set does (ADR-0067): each commit by
+    # its full sha, beside the failure's own words - not a count a reader can do nothing with.
+    multi_line = "setuptools refused the build\n  error: invalid version"
+    tallied = tally_yield(
+        [
+            _mined(Unprovisioned("no pyproject.toml at this commit"), 1),
+            _mined(_outcome(GateRejection.STILL_RED), 2),
+            _mined(Unprovisioned(multi_line), 3),
+        ]
+    )
+
+    assert dict(tallied.unprovisioned) == {
+        f"{1:040x}": "no pyproject.toml at this commit",
+        f"{3:040x}": multi_line,
+    }
+    assert tallied.commits_examined == 3
+    assert tallied.candidates == 1
+
+
+def test_tally_refuses_one_sha_counted_unprovisioned_twice() -> None:
+    # A walk yields each commit once, so a sha that arrives twice is a broken caller. Keyed by
+    # sha, the second collapses into the first; the partition then comes up one short of the
+    # commits examined, and the yield is refused rather than quietly undercounted.
+    twice = _mined(Unprovisioned(_NO_ENVIRONMENT), 1)
+
+    with pytest.raises(ValidationError, match="partition commits examined"):
+        tally_yield([twice, twice])
+
+
+def test_run_gate_hands_back_the_factorys_unprovisioned_value(tmp_path: Path) -> None:
+    # The gate does not reword, wrap or drop the reason: what the host wiring said is what the
+    # yield will print, so the one sentence that explains a gap survives the trip through `mine`.
+    refusal = Unprovisioned(_NO_ENVIRONMENT)
+
+    def refuse(workspace: Path) -> Runner | Unprovisioned:
+        return refusal
+
+    outcome = run_gate(
+        history=_StubHistory(tmp_path, {}),
+        runner_for=refuse,
+        commit=CommitRef(sha=_STUB_ORDINARY, parent=_STUB_PARENT, subject="ordinary"),
+        split=split_changes((_ORDINARY_TEST, _ORDINARY_SOURCE)),
+        test_patch="--- a/tests/test_widget.py\n",
+        ground_truth_patch="--- a/src/widget.py\n",
+        timeout_s=_RUN_TIMEOUT_S,
+    )
+
+    assert outcome is refusal
 
 
 @pytest.mark.parametrize(
@@ -349,7 +428,7 @@ def test_the_fixture_yield_is_a_partition_with_nothing_unprovisioned() -> None:
         (GateOutcome(rejection=None, fail_to_pass=("t.py::c",), pass_to_pass=("t.py::b",)), False),
         (GateOutcome(rejection=None, fail_to_pass=("t.py::a",), pass_to_pass=()), False),
         (GateOutcome(rejection=GateRejection.STILL_RED, fail_to_pass=(), pass_to_pass=()), False),
-        (None, False),
+        (Unprovisioned(_NO_ENVIRONMENT), False),
     ],
     ids=[
         "exact-match",
@@ -360,7 +439,7 @@ def test_the_fixture_yield_is_a_partition_with_nothing_unprovisioned() -> None:
     ],
 )
 def test_a_task_revalidates_only_when_it_reproduces_the_sets_it_recorded(
-    outcome: GateOutcome | None, valid: bool
+    outcome: GateOutcome | Unprovisioned, valid: bool
 ) -> None:
     # The gate accepts on whatever crosses red to green now; a suite is a claim about what
     # crossed then. A task whose recorded fail_to_pass has stopped failing at the base state is
@@ -394,7 +473,7 @@ def test_a_commit_whose_test_half_reads_as_an_option_is_rejected_without_ending_
     )
 
     rejected, following = mined
-    assert rejected.outcome is not None
+    assert isinstance(rejected.outcome, GateOutcome)
     assert rejected.outcome.rejection is GateRejection.NO_TEST_CHANGES
     assert rejected.task is None
     # The observable proof that nothing ended: the next commit was not merely yielded, it was
@@ -429,13 +508,13 @@ def test_a_recorded_task_with_no_runnable_test_file_is_one_bad_row_not_a_dead_ru
     )
 
     [(bad, bad_outcome), (following, following_outcome)] = revalidated
-    assert bad_outcome is not None
+    assert isinstance(bad_outcome, GateOutcome)
     assert bad_outcome.rejection is GateRejection.NO_TEST_CHANGES
     assert not revalidates(bad, bad_outcome)
     # And the task after it was still measured, which is the whole difference between a report
     # with one bad row in it and no report at all.
     assert following is suite.tasks[1]
-    assert following_outcome is not None
+    assert isinstance(following_outcome, GateOutcome)
     assert runner.calls == [(_ORDINARY_TEST,)] * 3
 
 
@@ -462,7 +541,7 @@ def test_the_gate_never_points_a_runner_at_an_empty_selection(tmp_path: Path) ->
 
     assert all(runner.calls), f"the gate ran with an empty selection: {runner.calls}"
     [(_, outcome)] = revalidated
-    assert outcome is not None
+    assert isinstance(outcome, GateOutcome)
     assert outcome.rejection is GateRejection.NO_TEST_CHANGES
 
 
@@ -526,7 +605,7 @@ class _RecordingRunner:
 def _always(runner: Runner) -> RunnerFactory:
     """The stub wiring: every workspace gets the same runner, and none is ever unprovisioned."""
 
-    def runner_for(workspace: Path) -> Runner | None:
+    def runner_for(workspace: Path) -> Runner | Unprovisioned:
         return runner
 
     return runner_for
@@ -568,7 +647,7 @@ def _recorded_task() -> Task:
 
 def _accepted(found: MinedCommit) -> bool:
     """MinedCommit's invariant, read the way the CLI reads it."""
-    return found.outcome is not None and found.outcome.rejection is None
+    return isinstance(found.outcome, GateOutcome) and found.outcome.rejection is None
 
 
 def _known_good_task(history: GitHistory) -> Task:

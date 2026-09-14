@@ -39,8 +39,8 @@ from assay.adapters import (
     ModelTransportError,
     NaiveBaselineAdapter,
 )
-from assay.adapters.naive import _strip_code_fence
-from assay.mine import CommitRef
+from assay.adapters.naive import LOCAL_NAME, NAIVE_NAME, _strip_code_fence
+from assay.mine import CommitRef, Unprovisioned
 from assay.mine import TestReport as Report
 from assay.mine import TestRunner as Runner
 from assay.mine import TestStatus as Status
@@ -234,11 +234,11 @@ class _RecordingFactory:
     "No container was started" cannot be read off a verdict; it is this list staying empty.
     """
 
-    def __init__(self, runner: Runner | None) -> None:
+    def __init__(self, runner: Runner | Unprovisioned) -> None:
         self._runner = runner
         self.workspaces: list[Path] = []
 
-    def __call__(self, workspace: Path) -> Runner | None:
+    def __call__(self, workspace: Path) -> Runner | Unprovisioned:
         self.workspaces.append(workspace)
         return self._runner
 
@@ -322,6 +322,10 @@ def _run(
 # Conformance is proved here, statically, by ``mypy --strict``; ``Adapter`` is deliberately not
 # ``runtime_checkable``, and an ``isinstance`` check would only ask whether the names exist.
 _: Adapter = NaiveBaselineAdapter(transport=_CannedTransport(_response()), model=_MODEL)
+# The same class under its second name is the same adapter, and has to satisfy the same protocol.
+_named: Adapter = NaiveBaselineAdapter(
+    transport=_CannedTransport(_response()), model=_MODEL, name=LOCAL_NAME
+)
 
 
 def test_the_diff_returned_is_the_models_own_answer(tmp_path: Path) -> None:
@@ -434,6 +438,34 @@ def test_the_attempt_names_the_tool_the_task_and_the_trial(tmp_path: Path) -> No
     assert attempt.task_id == _task().task_id
     assert attempt.trial_index == _TRIAL_INDEX
     assert attempt.schema_version == 1
+
+
+def test_the_adapter_answers_to_naive_unless_it_is_given_another_name(tmp_path: Path) -> None:
+    # The default is the name every report already carries, so a caller that says nothing gets
+    # the row the reports have always had. Both strings are pinned: they are read by name out
+    # of result sets on disk, and renaming one silently would orphan every earlier run.
+    attempt = _run(_canned_adapter(), _workspace(tmp_path))
+
+    assert attempt.adapter_name == NAIVE_NAME == "naive"
+    assert LOCAL_NAME == "naive-local"
+
+
+def test_the_same_code_under_the_local_name_is_a_separate_row(tmp_path: Path) -> None:
+    # A local model and a metered one are different tools measured by the same adapter code, so
+    # the name is what separates them in a report - and the version still names the model, which
+    # is the only place an attempt records which one answered.
+    adapter = NaiveBaselineAdapter(
+        transport=_CannedTransport(_response()), model=_MODEL, name=LOCAL_NAME
+    )
+
+    attempt = _run(adapter, _workspace(tmp_path))
+
+    assert attempt.adapter_name == adapter.name == LOCAL_NAME
+    assert attempt.adapter_version == adapter.version
+    assert attempt.adapter_version.endswith(f"+{_MODEL}")
+    # Same code, so the harness half of the version is the same as the paid baseline's: the two
+    # rows differ by name and by model, and by nothing the reader has to interpret.
+    assert adapter.version == _canned_adapter().version
 
 
 def test_the_workspace_is_read_and_never_written(tmp_path: Path) -> None:

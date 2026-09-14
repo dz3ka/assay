@@ -23,6 +23,17 @@ Most of that is driven through an injected opener, which is how the response pat
 reachable without a network. The opener itself - the line that actually opens the socket, and
 its refusal to follow a redirect, which is what stops an allowlisted host from handing the
 API key to an unallowlisted one - is driven against a real HTTP server on loopback.
+
+From the local-model work there are *two* transports in that one module and they are held to
+two different rules, which is the point of there being two of them (ADR-0059). The keyed one
+above may only speak ``https`` to an allowlisted host; :class:`LocalModelTransport` may only
+speak ``http`` to the literal address ``127.0.0.1``, carries no key at all, and is refused for
+``localhost``, ``::1`` and any other address - a name resolves through a file this harness does
+not own. Each transport's refusal matrix is asserted separately below, including the case they
+disagree on: ``https://127.0.0.1`` is refused by both, for opposite reasons.
+
+Nothing here needs an Ollama daemon. The local transport's response paths are stubbed like the
+hosted one's, and its one real socket goes to a ``ThreadingHTTPServer`` this file starts.
 """
 
 import ast
@@ -38,7 +49,7 @@ from urllib.request import Request
 import pytest
 
 from assay.adapters import ModelResponse, ModelTransportError
-from assay.host import HttpModelTransport
+from assay.host import HttpModelTransport, LocalModelTransport
 from assay.host.model_api import HttpOpener, open_request
 
 SOURCE_ROOT = Path(__file__).parent.parent.parent / "src" / "assay"
@@ -73,6 +84,31 @@ GOOD_BODY = json.dumps(
         "role": "assistant",
         "content": [{"type": "text", "text": "diff --git a/a.py b/a.py\n"}],
         "usage": {"input_tokens": 11, "output_tokens": 7},
+    }
+).encode("utf-8")
+
+# A model served on this machine: the endpoint Ollama's OpenAI-compatible route listens on, at
+# its default port. Written as an address rather than a name on purpose - see the refusal matrix.
+LOCAL_ENDPOINT = "http://127.0.0.1:11434/v1/chat/completions"
+
+# A well-formed chat-completion response, in the shape `_parse_chat_completion` declares. That
+# shape was taken from documentation; on 2026-09-09 a live `qwen2.5-coder:7b` daemon answered
+# through the CLI and every field this fixture models was present and well-typed on the real
+# bodies, which parsed without raising. The parser needed no correction. The raw bodies were not
+# retained, so this constant has not been diffed against a recorded body byte for byte - it
+# remains a fixture, no longer a statement of an untested assumption.
+GOOD_CHAT_BODY = json.dumps(
+    {
+        "id": "chatcmpl-01",
+        "object": "chat.completion",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "diff --git a/b.py b/b.py\n"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 13, "completion_tokens": 5, "total_tokens": 18},
     }
 ).encode("utf-8")
 
@@ -165,7 +201,13 @@ def _transport(
     return HttpModelTransport(endpoint=endpoint, api_key=api_key, opener=opener)
 
 
-def _send(transport: HttpModelTransport) -> ModelResponse:
+def _local_transport(opener: HttpOpener, *, endpoint: str = LOCAL_ENDPOINT) -> LocalModelTransport:
+    # No `api_key` argument, and there is no keyword to pass one: a model on this machine is not
+    # authenticated, and the absence is enforced by the signature rather than by an empty string.
+    return LocalModelTransport(endpoint=endpoint, opener=opener)
+
+
+def _send(transport: HttpModelTransport | LocalModelTransport) -> ModelResponse:
     return transport.send(
         model="claude-sonnet-4-5",
         system="you are a patch generator",
@@ -238,13 +280,19 @@ def test_a_module_that_only_names_a_network_module_in_prose_is_not_an_offender(
         "file:///etc/passwd",
         "/v1/messages",
     ],
-    ids=["plain-http", "suffixed-host", "userinfo-decoy", "loopback", "file-url", "no-host"],
+    ids=["plain-http", "suffixed-host", "userinfo-decoy", "loopback-https", "file-url", "no-host"],
 )
 def test_an_endpoint_that_is_not_allowlisted_https_is_refused_at_construction(
     endpoint: str,
 ) -> None:
     # The prompt carries the private repository's own source, so this is the exfiltration
     # control and it is checked before anything is sent, not after.
+    #
+    # `loopback-https` stays refused now that a local model can be measured, and ADR-0059 says
+    # why it is not the case the local transport reopens: this is the *keyed* path, and an
+    # operator pointing it at a forwarder on this machine is exactly the routing-around the
+    # allowlist exists to stop. The loopback endpoint that is allowed is a different class, with
+    # no key to hand over, asserted separately below.
     with pytest.raises(ModelTransportError):
         _transport(_RecordingOpener(), endpoint=endpoint)
 
@@ -380,8 +428,154 @@ def test_a_status_other_than_200_is_refused_even_when_the_body_parses() -> None:
         _send(_transport(_RecordingOpener(status=204)))
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://localhost:11434/v1/chat/completions",
+        "http://[::1]:11434/v1/chat/completions",
+        "http://127.0.0.2:11434/v1/chat/completions",
+        "https://127.0.0.1:11434/v1/chat/completions",
+        "https://api.anthropic.com/v1/messages",
+        "file:///etc/passwd",
+        "/v1/chat/completions",
+    ],
+    ids=[
+        "a-name-not-an-address",
+        "ipv6-loopback",
+        "a-neighbouring-address",
+        "https-not-http",
+        "a-host-off-this-machine",
+        "file-url",
+        "no-host",
+    ],
+)
+def test_a_local_endpoint_that_is_not_http_at_the_literal_loopback_address_is_refused(
+    endpoint: str,
+) -> None:
+    # The exemption this class carries is "the bytes do not leave the machine", so the check is
+    # the narrowest thing that can be true of: one literal address, resolved by nobody.
+    # `localhost` and `::1` are refused because the hosts file is not a trust input - a machine
+    # where `localhost` has been pointed elsewhere would otherwise send the repository there -
+    # and `https` is refused because the endpoint the operator meant is a plaintext daemon, so a
+    # TLS one at this address is something else (ADR-0059).
+    with pytest.raises(ModelTransportError):
+        _local_transport(_RecordingOpener(body=GOOD_CHAT_BODY), endpoint=endpoint)
+
+
+def test_a_local_endpoint_carrying_credentials_is_refused_without_echoing_them() -> None:
+    with pytest.raises(ModelTransportError) as caught:
+        _local_transport(
+            _RecordingOpener(body=GOOD_CHAT_BODY),
+            endpoint="http://user:hunter2@127.0.0.1:11434/v1/chat/completions",
+        )
+
+    assert "hunter2" not in str(caught.value)
+
+
+def test_the_loopback_endpoint_the_local_model_listens_on_is_accepted() -> None:
+    response = _send(_local_transport(_RecordingOpener(body=GOOD_CHAT_BODY)))
+
+    assert response.text == "diff --git a/b.py b/b.py\n"
+    assert response.input_tokens == 13
+    assert response.output_tokens == 5
+
+
+def test_the_local_request_carries_both_messages_and_no_credential_header() -> None:
+    opener = _RecordingOpener(body=GOOD_CHAT_BODY)
+
+    _send(_local_transport(opener))
+
+    request = opener.requests[0]
+    assert request.full_url == LOCAL_ENDPOINT
+    assert request.get_method() == "POST"
+    # The absence is the assertion: there is no key on this path, so there is nothing a
+    # misconfigured local endpoint could be handed.
+    assert request.get_header("X-api-key") is None
+    assert request.get_header("Authorization") is None
+    assert opener.timeouts == [30.0]
+    body = request.data
+    assert isinstance(body, bytes)
+    sent = json.loads(body)
+    assert sent["model"] == "claude-sonnet-4-5"
+    assert sent["max_tokens"] == 1024
+    assert sent["stream"] is False
+    assert sent["messages"] == [
+        {"role": "system", "content": "you are a patch generator"},
+        {"role": "user", "content": "fix the failing test"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"not json at all",
+        b"[]",
+        json.dumps({"usage": {"prompt_tokens": 1, "completion_tokens": 2}}).encode(),
+        json.dumps({"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 2}}).encode(),
+        json.dumps({"choices": [{"text": "hi"}], "usage": {}}).encode(),
+        json.dumps({"choices": [{"message": {"content": ["a", "b"]}}, {}], "usage": {}}).encode(),
+        json.dumps({"choices": [{"message": {"content": "hi"}}]}).encode(),
+        json.dumps(
+            {"choices": [{"message": {"content": "hi"}}], "usage": {"prompt_tokens": 1}}
+        ).encode(),
+        json.dumps(
+            {
+                "choices": [{"message": {"content": "hi"}}],
+                "usage": {"prompt_tokens": -1, "completion_tokens": 2},
+            }
+        ).encode(),
+        json.dumps(
+            {
+                "choices": [{"message": {"content": "hi"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": True},
+            }
+        ).encode(),
+    ],
+    ids=[
+        "not-json",
+        "not-an-object",
+        "no-choices",
+        "empty-choices",
+        "choice-without-a-message",
+        "content-not-a-string",
+        "no-usage",
+        "a-token-count-missing",
+        "a-token-count-negative",
+        "a-token-count-boolean",
+    ],
+)
+def test_a_local_response_that_is_not_the_declared_shape_raises_rather_than_guessing(
+    body: bytes,
+) -> None:
+    # The shape this parser reads is documented rather than measured - no daemon has ever
+    # answered it here - so every one of these is refused instead of defaulted. A missing token
+    # count read as zero would put a fabricated number in a report about token counts.
+    with pytest.raises(ModelTransportError):
+        _send(_local_transport(_RecordingOpener(body=body)))
+
+
+def test_a_local_status_other_than_200_is_refused_even_when_the_body_parses() -> None:
+    with pytest.raises(ModelTransportError, match="404"):
+        _send(_local_transport(_RecordingOpener(status=404, body=GOOD_CHAT_BODY)))
+
+
+@pytest.mark.parametrize(
+    "error",
+    [TimeoutError("timed out"), ConnectionRefusedError(61, "nope")],
+    ids=["timeout", "refused"],
+)
+def test_a_local_daemon_that_is_not_running_arrives_as_one_error_the_adapter_can_record(
+    error: Exception,
+) -> None:
+    # The failure this path will actually meet: nothing is listening on 11434 because nobody
+    # started Ollama. It is one `ModelTransportError`, like every other failure of the seam.
+    with pytest.raises(ModelTransportError):
+        _send(_local_transport(_refusing_opener(error)))
+
+
 class _Handler(BaseHTTPRequestHandler):
-    """A loopback endpoint: ``/messages`` answers, ``/redirect`` tries to send us elsewhere."""
+    """A loopback endpoint: ``/messages`` and ``/v1/chat/completions`` answer in their own
+    shapes, ``/redirect`` tries to send us elsewhere."""
 
     protocol_version = "HTTP/1.1"
 
@@ -395,11 +589,14 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("content-length", "0")
             self.end_headers()
             return
+        # This server stands in for a model on this machine as well as for an endpoint off it,
+        # so the route decides the dialect - which is the same thing the two transports do.
+        body = GOOD_CHAT_BODY if self.path == "/v1/chat/completions" else GOOD_BODY
         self.send_response(200)
         self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(GOOD_BODY)))
+        self.send_header("content-length", str(len(body)))
         self.end_headers()
-        self.wfile.write(GOOD_BODY)
+        self.wfile.write(body)
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - base's own name
         """Silence: a passing test should not print an access log."""
@@ -450,3 +647,21 @@ def test_the_opener_refuses_a_redirect_rather_than_carrying_the_key_to_a_new_hos
 
     assert caught.value.code == 302
     assert loopback.paths == ["/redirect"]  # type: ignore[attr-defined]
+
+
+def test_the_local_transport_really_speaks_http_to_a_model_shaped_server_on_this_machine(
+    loopback: ThreadingHTTPServer,
+) -> None:
+    # The end-to-end for the local path, with no opener injected: construction, the socket, the
+    # 1 MiB cap and the strict parse, on the real `open_request`. The server is an
+    # `http.server` on 127.0.0.1 rather than a daemon, so this test needs nothing installed -
+    # which is also why it does not prove Ollama's shape. That claim is documentation until a
+    # later milestone points this class at the daemon and checks the recorded body.
+    transport = LocalModelTransport(endpoint=_url(loopback, "/v1/chat/completions"))
+
+    response = _send(transport)
+
+    assert response.text == "diff --git a/b.py b/b.py\n"
+    assert response.input_tokens == 13
+    assert response.output_tokens == 5
+    assert loopback.paths == ["/v1/chat/completions"]  # type: ignore[attr-defined]

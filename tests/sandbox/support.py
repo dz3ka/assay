@@ -6,9 +6,9 @@ that is the exact failure this project exists to catch. If the daemon is not up,
 red, and that is the intended report.
 
 The checkout under test is the SPEC §9 fixture repository, taken through
-:class:`assay.host.GitHistory` rather than copied into place, because a git worktree is what
-production hands :func:`assay.sandbox.build_task_image` - a tree whose ``.git`` is a *file*
-pointing back at the clone, which is one of the two things the build's dockerignore excludes.
+:class:`assay.host.GitHistory` rather than copied into place, because a *standalone* checkout
+is what production hands :func:`assay.sandbox.build_task_image` (ADR-0062) - a tree with a
+real ``.git`` directory in it, which the build copies and a linked worktree cannot supply.
 """
 
 from collections.abc import Iterator
@@ -43,12 +43,12 @@ _HEAD_LABEL = "merge_tidy"
 
 
 @contextmanager
-def fixture_worktree(root: Path) -> Iterator[tuple[Path, str]]:
+def fixture_checkout(root: Path) -> Iterator[tuple[Path, str]]:
     """Build the fixture repository under ``root`` and check its HEAD out, yielding both.
 
     Args:
         root: A caller-owned directory, pytest's ``tmp_path`` in practice. The clone and the
-            worktree both live under it and neither outlives the block.
+            checkout both live under it and neither outlives the block.
 
     Yields:
         The worktree path and the commit sha it holds - the two arguments a task image is built
@@ -57,7 +57,7 @@ def fixture_worktree(root: Path) -> Iterator[tuple[Path, str]]:
     repo = build_fixture_repo(root / "repo")
     commit = next(entry.sha for entry in FIXTURE_COMMITS if entry.label == _HEAD_LABEL)
     history = GitHistory(repo, worktree_root=root / "worktrees")
-    with history.worktree(commit) as checkout:
+    with history.standalone_checkout(commit) as checkout:
         yield checkout, commit
 
 
@@ -93,7 +93,7 @@ def fixture_image(root: Path) -> Iterator[tuple[Path, str]]:
     Yields:
         The workspace to mount and the tag to run.
     """
-    with fixture_worktree(root) as (checkout, commit):
+    with fixture_checkout(root) as (checkout, commit):
         yield (
             checkout,
             build_task_image(

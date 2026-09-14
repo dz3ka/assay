@@ -6,7 +6,9 @@ float has no stable canonical encoding, and two spellings of one amount - ``1.5`
 ``1.500000`` - would give the same measurement two content addresses, so the scale is fixed
 rather than left to whoever computed it.
 
-The suite schema's rules carry over. No field has a default, so a document and the model
+The suite schema's rules carry over. No field has a default - with the single exception
+``ResultSet.unprovisioned``, empty by default so that a document written before the field
+existed states the same coverage it always did (ADR-0067). Otherwise a document and the model
 built from it correspond key for key and re-encode to the bytes they were read from. Nothing
 is normalised on the way in: a value that would re-encode differently is refused rather than
 quietly rewritten. And an outcome is carried, never computed here - the scorer that decides
@@ -15,6 +17,7 @@ one lands in M2 (SPEC §7).
 Pure: validation only, no I/O. Result-set files live in :mod:`assay.results.store`.
 """
 
+from collections.abc import Mapping
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Literal, Self
@@ -202,8 +205,42 @@ class ResultSet(SchemaModel):
     ``schema_version`` sits on the envelope because :func:`assay.results.store.read_result_set`
     probes it before parsing anything, and a top-level key this model did not declare would
     make every valid file fail under ``extra="forbid"``.
+
+    ``suite_task_count`` and ``unprovisioned`` are the coverage claim: how many tasks the run
+    was meant to measure, and which of them it could not. Without them a file holding twelve
+    tasks' trials out of a thirteen-task suite is indistinguishable from a complete run of
+    twelve, and CLAUDE.md forbids reporting the numerator alone (ADR-0067).
     """
 
     schema_version: Literal[1]
     suite_hash: SuiteHash
     results: tuple[Result, ...]
+    # The denominator, stored not derived: run_report takes only `results: Path`
+    # (cli/main.py:668) and no store maps a SuiteHash back to a suite, so the
+    # denominator travels with the numerator exactly as MiningYield.commits_examined
+    # does (mine/models.py:207-208).
+    suite_task_count: int = Field(ge=0)
+    # Tasks the run could not measure, each with the sentence saying why. A mapping,
+    # not a tuple of models, for MiningYield.rejected's reason (mine/models.py:220):
+    # a reason per key, and a task listed twice is unrepresentable.
+    unprovisioned: Mapping[TaskId, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_coverage(self) -> Self:
+        """Refuse a result set whose coverage claim contradicts the results it carries.
+
+        ``<=``, not ``!=`` as :meth:`assay.mine.models.MiningYield._check_partition` uses
+        (mine/models.py:273): this file is rewritten after every task, so one that covers
+        fewer than all the suite's tasks is a run in progress rather than a bad document.
+        Over-count is still a lie, and so is a task counted on both sides at once.
+        """
+        measured = {r.task_id for r in self.results}
+        both = sorted(measured & set(self.unprovisioned))
+        if both:
+            raise ValueError(f"tasks are both measured and unprovisioned: {both}")
+        if len(measured) + len(self.unprovisioned) > self.suite_task_count:
+            raise ValueError(
+                f"{len(measured)} measured + {len(self.unprovisioned)} unprovisioned "
+                f"exceeds the suite's {self.suite_task_count} tasks"
+            )
+        return self

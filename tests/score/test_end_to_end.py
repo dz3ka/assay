@@ -27,7 +27,7 @@ import pytest
 from assay.adapters import Adapter, GroundTruthAdapter, NullAdapter
 from assay.host import GitHistory, PytestHostRunner, provision_venv
 from assay.mine import TestRunner as Runner
-from assay.mine import mine_suite
+from assay.mine import Unprovisioned, mine_suite
 from assay.report import ToolSummary, summarise
 from assay.results import Budget, Outcome, Result, ResultSet, read_result_set, write_result_set
 from assay.sandbox import build_task_image, sandbox_runner_for
@@ -68,7 +68,7 @@ _BUDGET = Budget(
 _GENERATOR = "assay-tests/score-end-to-end"
 
 
-def _host_runner_for(workspace: Path) -> Runner | None:
+def _host_runner_for(workspace: Path) -> Runner | Unprovisioned:
     """The host wiring the miner is handed, as ``tests/mine/test_pipeline.py`` builds it.
 
     Mining is the half of this run that stays on the host: it executes code that is already in
@@ -107,7 +107,7 @@ def _image_for(history: GitHistory, task: Task) -> str:
     (``tests/sandbox/test_runner.py`` pins that), so an image per base commit is an environment
     per task and not a copy of the answer.
     """
-    with history.worktree(task.base_commit) as checkout:
+    with history.standalone_checkout(task.base_commit) as checkout:
         return build_task_image(
             context=checkout,
             base_commit=task.base_commit,
@@ -179,6 +179,9 @@ def scored(tmp_path_factory: pytest.TempPathFactory) -> ResultSet:
         ResultSet(
             schema_version=1,
             suite_hash=suite.suite_hash,
+            # The suite as it was loaded: both oracles run on every task, so the bracket
+            # tests below read a set whose coverage is whole.
+            suite_task_count=len(suite.body.tasks),
             results=_trial_results(
                 tasks=suite.body.tasks, history=history, images=images, out_root=out_root
             ),

@@ -52,7 +52,7 @@ from assay.mine.pipeline import (
     run_gate,
     tally_yield,
 )
-from assay.mine.protocols import History, RunnerFactory, TestRunner
+from assay.mine.protocols import History, RunnerFactory, TestRunner, Unprovisioned
 
 __all__ = [
     "GREEN_CONFIRMATION_RUNS",
@@ -68,6 +68,7 @@ __all__ = [
     "TestReport",
     "TestRunner",
     "TestStatus",
+    "Unprovisioned",
     "build_prompt",
     "decide_gate",
     "is_node_id",

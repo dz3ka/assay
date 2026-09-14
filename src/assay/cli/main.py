@@ -43,10 +43,13 @@ from collections.abc import Callable, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from importlib.metadata import version
 from pathlib import Path
+from typing import Final
 
 from pydantic import ValidationError
 
 from assay.adapters import (
+    LOCAL_NAME,
+    NAIVE_NAME,
     Adapter,
     AgenticCliAdapter,
     GroundTruthAdapter,
@@ -61,6 +64,7 @@ from assay.host import (
     EnvironmentSetupError,
     GitHistory,
     HttpModelTransport,
+    LocalModelTransport,
     PytestHostRunner,
     minimal_env,
     provision_venv,
@@ -72,6 +76,7 @@ from assay.mine import (
     MinedCommit,
     MiningYield,
     TestRunner,
+    Unprovisioned,
     mine_suite,
     revalidate_suite,
     revalidates,
@@ -185,6 +190,25 @@ DEFAULT_MODEL = "claude-sonnet-5"
 # with.
 MODEL_ENDPOINT = "https://api.anthropic.com/v1/messages"
 
+# Where the local baseline's one call goes: Ollama's OpenAI-compatible route on this machine's
+# loopback interface, which is the address and port that daemon listens on by default. Not a
+# flag either, and for a sharper reason than the line above (ADR-0061): an endpoint a command
+# line can redirect is one the prompt can be redirected to, and the prompt carries the
+# repository under evaluation. `LocalModelTransport` refuses anything but the literal
+# `127.0.0.1` over `http` (ADR-0059), so this constant is inside that refusal rather than
+# trusted by it.
+LOCAL_MODEL_ENDPOINT: Final = "http://127.0.0.1:11434/v1/chat/completions"
+
+# Which model the local baseline asks that daemon for. A constant and not a flag, unlike
+# `--model`: the hosted default is an alias a run may reasonably want to compare two of, while
+# this one names a tag that has to be pulled onto this machine first, so a flag would offer a
+# choice the run cannot honour and would fail inside the trial rather than at the command line.
+# The name is written into the adapter's version string, so a result set still says which model
+# answered. Qwen2.5-Coder 7B because it is the smallest code model with a usable diff format;
+# **nothing here has been measured** - no daemon has served this repository a completion
+# (ADR-0059), so this is a starting point a live run corrects, not a recommendation.
+DEFAULT_LOCAL_MODEL: Final = "qwen2.5-coder:7b"
+
 # The two names one API key travels under, and the rename happens here and nowhere else. Assay
 # reads its own name so that a machine holding a key for something else does not silently spend
 # it; the agentic tool reads the vendor's, because that is what the CLI being measured looks
@@ -213,13 +237,18 @@ IMAGE_BUILD_TIMEOUT_S = 1800
 # observes as soon as there is one (:func:`assay.sandbox.render_agent_dockerfile`).
 AGENT_TOOL_VERSION: str | None = None
 
-# Every adapter `--adapter` accepts, in the order a report reads best: the two oracles that
-# bracket the scale, then the baseline, then the tool. The names are the adapters' own, so a
-# result set cannot name a tool the CLI would not run.
+# Every adapter `--adapter` accepts, in the order `--help` lists them: the two oracles that
+# bracket the scale, then the two baselines, then the tool. There are two
+# baselines because one raw model call is one measurement whichever endpoint answers it - the
+# metered one this project has never been able to afford, and the one served on this machine
+# (ADR-0061) - and they sit adjacent so the help text reads the pair together. This tuple feeds
+# `choices=` and the help string and nothing else; it does not order the rows of a report. The
+# names are the adapters' own, so a result set cannot name a tool the CLI would not run.
 ADAPTER_NAMES: tuple[str, ...] = (
     GroundTruthAdapter.name,
     NullAdapter.name,
     NaiveBaselineAdapter.name,
+    LOCAL_NAME,
     AgenticCliAdapter.name,
 )
 
@@ -533,8 +562,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help=f"An adapter to measure; repeat the flag for each. One of: "
         f"{', '.join(ADAPTER_NAMES)}. A run naming a tool must also name "
-        f"{NaiveBaselineAdapter.name}, because a tool that cannot beat one raw model call is "
-        "the finding.",
+        f"{NAIVE_NAME}, because a tool that cannot beat one raw model call is the finding; "
+        f"{LOCAL_NAME} is that same call to a model served on this machine and does not stand "
+        f"in for {NAIVE_NAME}, since a tool measured only against a small local model has been "
+        "flattered rather than tested.",
     )
     run.add_argument(
         "--trials",
@@ -675,7 +706,7 @@ def run_report(results: Path, fmt: str, prices: PriceTable | None) -> int:
     return EXIT_OK
 
 
-def host_runner_for(workspace: Path) -> TestRunner | None:
+def host_runner_for(workspace: Path) -> TestRunner | Unprovisioned:
     """Give ``workspace`` an environment its tests can run in, or admit that nothing can.
 
     The whole of what :mod:`assay.mine` is not allowed to know, and the reason
@@ -683,17 +714,18 @@ def host_runner_for(workspace: Path) -> TestRunner | None:
     worktree the gate has only just made, so its environment cannot be provisioned any earlier
     than here.
 
-    ``None`` rather than a raised ``EnvironmentSetupError``, and this is the seam that decides
-    it. Provisioning happens per commit, so a repository mined back past the commit that
-    introduced its packaging has commits that simply cannot be installed; a walk that died on
-    the first of them would report no yield at all. Catching it here is also what keeps
-    ``assay.mine`` from importing ``assay.host`` - the miner counts the commit as
-    ``unprovisioned`` and keeps walking, and never learns that uv exists.
+    :class:`~assay.mine.Unprovisioned` rather than a raised ``EnvironmentSetupError``, and this
+    is the seam that decides it. Provisioning happens per commit, so a repository mined back
+    past the commit that introduced its packaging has commits that simply cannot be installed; a
+    walk that died on the first of them would report no yield at all. Catching it here is also
+    what keeps ``assay.mine`` from importing ``assay.host`` - the miner names the commit as
+    ``unprovisioned``, with the error's own sentence, and keeps walking, and never learns that
+    uv exists (ADR-0073).
     """
     try:
         python = provision_venv(workspace, timeout_s=PROVISION_TIMEOUT_S)
-    except EnvironmentSetupError:
-        return None
+    except EnvironmentSetupError as error:
+        return Unprovisioned(str(error))
     return PytestHostRunner(python)
 
 
@@ -805,13 +837,16 @@ def _adapters_needing_no_image(
 ) -> tuple[Adapter, ...]:
     """Every named adapter except the agentic one, made once for the whole run.
 
-    The three that are left answer from the task, from nothing, or from one model call, so none
-    of them needs to know which image a task was built into and all three can be made before the
-    first build. The agentic adapter is the exception and is made per task
-    (:func:`_agentic_adapter`), because the container it drives holds that task's environment.
+    The four that are left answer from the task, from nothing, or from one model call - to a
+    metered endpoint or to a model on this machine - so none of them needs to know which image a
+    task was built into and all four can be made before the first build. The agentic adapter is
+    the exception and is made per task (:func:`_agentic_adapter`), because the container it
+    drives holds that task's environment.
 
-    The naive baseline's transport is built here, which is where a missing or malformed key is
-    refused - before a single image is built, rather than an hour into a run.
+    Both baselines' transports are built here, which is where a bad endpoint or a missing key is
+    refused - before a single image is built, rather than an hour into a run. ``api_key`` is read
+    by the metered baseline alone: :class:`LocalModelTransport` has no keyword to pass one
+    (ADR-0059), so a run naming only ``naive-local`` never touches the environment variable.
     """
     made: list[Adapter] = []
     for name in names:
@@ -819,11 +854,23 @@ def _adapters_needing_no_image(
             made.append(GroundTruthAdapter())
         elif name == NullAdapter.name:
             made.append(NullAdapter())
-        elif name == NaiveBaselineAdapter.name:
+        elif name == NAIVE_NAME:
             made.append(
                 NaiveBaselineAdapter(
                     transport=HttpModelTransport(endpoint=MODEL_ENDPOINT, api_key=api_key),
                     model=model,
+                )
+            )
+        elif name == LOCAL_NAME:
+            # The same class under its other name, which is the whole of the difference a
+            # report shows: a different transport, a different model, and a row of its own so
+            # the free call and the metered one are never averaged together. `--model` is not
+            # read here - it names a hosted alias this daemon has never heard of.
+            made.append(
+                NaiveBaselineAdapter(
+                    transport=LocalModelTransport(endpoint=LOCAL_MODEL_ENDPOINT),
+                    model=DEFAULT_LOCAL_MODEL,
+                    name=LOCAL_NAME,
                 )
             )
     return tuple(made)
@@ -854,6 +901,14 @@ def _adapter_refusal(names: Sequence[str]) -> str | None:
     spend. The two oracles are exempt: they answer from the task itself, so a run of the pair
     measures this harness and has nothing to compare a baseline against.
 
+    **The local baseline is exempt from being asked for a baseline, and is not one itself**
+    (ADR-0060). A run of the oracles and ``naive-local`` spends nothing, so demanding the
+    metered baseline beside it would demand money of the one run arranged to cost none - hence
+    the subtraction. But naming it does not discharge the rule, which is why the second clause
+    still reads ``NAIVE_NAME``: a frontier agent measured against a 7B model on this machine,
+    with that model called the baseline, is the flattering comparison CLAUDE.md's rule exists
+    to prevent, and a rule satisfiable by choosing a weaker opponent is not a rule.
+
     The second is that one adapter named twice would be measured twice under one name, and the
     two runs of it would land in the result set as duplicate trials of one task - which pass^n
     counts as two tasks. Refused here rather than deduplicated, because a caller who typed it
@@ -865,10 +920,10 @@ def _adapter_refusal(names: Sequence[str]) -> str | None:
             f"assay run: an adapter is named more than once ({', '.join(names)}); each one is "
             "measured once per trial, and a repeated name would report one tool as two"
         )
-    if named - ORACLE_ADAPTERS and NaiveBaselineAdapter.name not in named:
+    if named - ORACLE_ADAPTERS - {LOCAL_NAME} and NAIVE_NAME not in named:
         return (
             f"assay run: a run measuring a tool must also name --adapter "
-            f"{NaiveBaselineAdapter.name}; the naive baseline is one raw model call with no "
+            f"{NAIVE_NAME}; the naive baseline is one raw model call with no "
             "agent loop, and a tool that cannot beat it is the finding"
         )
     return None
@@ -907,6 +962,16 @@ def run_mine(*, repo: Path, out: Path, name: str | None, limit: int | None, time
             ):
                 mined.append(found)
                 print(_examined_line(len(mined), found), file=sys.stderr, flush=True)
+                if isinstance(found.outcome, Unprovisioned):
+                    # The run side's shape (`assay run: <task> unmeasured: <reason>`): the
+                    # yield counts the commit, and this is the one place its reason is said.
+                    # Kept out of `_examined_line`, which `validate`'s output shares.
+                    print(
+                        f"assay mine: {found.commit.sha[:12]} unprovisioned: "
+                        f"{found.outcome.reason}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
         body = SuiteBody(schema_version=1, suite_name=slug, tasks=_mined_tasks(mined))
         save_suite(out, body, generator=GENERATOR)
     except (AssayError, OSError) as error:
@@ -917,7 +982,7 @@ def run_mine(*, repo: Path, out: Path, name: str | None, limit: int | None, time
         return EXIT_FAILED
 
     print(f"assay mine: wrote {len(body.tasks)} tasks to {out}", file=sys.stderr)
-    for line in _yield_lines(tally_yield(found.outcome for found in mined)):
+    for line in _yield_lines(tally_yield(mined)):
         print(line)
     return EXIT_OK
 
@@ -989,9 +1054,15 @@ def run_run(
     :func:`assay.score.run_trial` per task per adapter per trial. What this function adds is the
     order they happen in, a line of progress each, and a result set at the end.
 
-    Everything is accumulated in memory and written once. There is no append and no resume: a
-    partially written result set is a report that would silently omit trials, and a run that has
-    to be repeated is honest about it. The largest measured yield to date is two tasks.
+    The result set is rewritten in full at the end of every task, and a task that could not be
+    measured is named in it rather than ending the run. The objection this replaces still holds
+    and is answered rather than dropped: a partial file used to omit trials silently, so
+    ``suite_task_count`` carries the suite's whole denominator and ``unprovisioned`` names each
+    task missing from it with the reason, which makes a short file self-describing instead of
+    quietly wrong. There is still no append and no resume - each write is the whole set so far,
+    and a repeated run starts over. A task is all-or-nothing: trials are buffered and only join
+    the set once that task finishes, because half a task's trials would be rendered as pass^n
+    over an n nobody ran.
 
     Nothing here computes a number a report will show. The trials go out exactly as they were
     scored, and ``assay report`` is where pass@1, pass^n and their intervals are decided - which
@@ -1035,51 +1106,95 @@ def run_run(
     )
     api_key = os.environ.get(MODEL_API_KEY_ENV, "")
     results: list[Result] = []
+    # The suite's tasks this run could not measure, each against the sentence that failed it.
+    # Both causes - an image that would not build, a test patch that refuses at its base commit -
+    # land here under one state, because both mean the task was never given an environment its
+    # tests could run in and neither is the tool under test failing (ADR-0068).
+    unprovisioned: dict[str, str] = {}
+
+    def _snapshot() -> ResultSet:
+        """The whole set as it stands - what every write below writes, there being no append."""
+        return ResultSet(
+            schema_version=1,
+            suite_hash=suite.suite_hash,
+            results=tuple(results),
+            # The suite's own size, so a report reads coverage off the file rather than
+            # inferring it from the trials present (ADR-0067).
+            suite_task_count=len(tasks),
+            unprovisioned=dict(unprovisioned),
+        )
+
     try:
         # Built before anything else, so a run configured without a key fails in a second
         # rather than after the first image.
         adapters = _adapters_needing_no_image(adapter_names, model=model, api_key=api_key)
-        # Outside both the clone and the output, and gone when the run ends: worktrees and the
-        # directories trials write their junit reports into are the largest things this command
-        # makes, and one leaked per interrupted run fills a disk quietly.
+        # Outside both the clone and the output, and gone when the run ends: the checkouts and
+        # the directories trials write their junit reports into are the largest things this
+        # command makes, and one leaked per interrupted run fills a disk quietly. Since ADR-0062
+        # the per-task build context is a standalone clone rather than a worktree, so what lands
+        # here is a full copy of the history per task and not a pointer file.
         with tempfile.TemporaryDirectory(prefix="assay-run-") as scratch:
             worktrees = Path(scratch) / "worktrees"
             out_root = Path(scratch) / "out"
             worktrees.mkdir()
             out_root.mkdir()
             history = GitHistory(repo, worktree_root=worktrees)
+            # Before the first task, so the path the caller was told to read exists from the
+            # start - empty, and already carrying the denominator it will be read against.
+            write_result_set(out, _snapshot())
             for task in tasks:
-                image = _task_image(history, task)
-                for adapter in _task_adapters(
-                    adapters,
-                    names=adapter_names,
-                    task=task,
-                    image=image,
-                    model=model,
-                    api_key=api_key,
-                ):
-                    for trial_index in range(trials):
-                        result = run_trial(
-                            task=task,
-                            adapter=adapter,
-                            budget=budget,
-                            history=history,
-                            runner_for=sandbox_runner_for(
-                                image, limits=TRIAL_LIMITS, out_root=out_root
-                            ),
-                            timeout_s=timeout_s,
-                            trial_index=trial_index,
-                        )
-                        results.append(result)
-                        print(
-                            _trial_line(len(results), planned, result, trials),
-                            file=sys.stderr,
-                            flush=True,
-                        )
-        write_result_set(
-            out,
-            ResultSet(schema_version=1, suite_hash=suite.suite_hash, results=tuple(results)),
-        )
+                # Buffered rather than appended straight to `results`, which is what makes a
+                # task all-or-nothing: these join the set in the `else` arm below, so a task
+                # that fails on its fourth trial of five contributes none of the three it
+                # scored. Publishing those would render pass^3 as this task's pass^n
+                # (`report/model.py`), which is a rate over an n nobody ran.
+                task_results: list[Result] = []
+                try:
+                    image = _task_image(history, task)
+                    for adapter in _task_adapters(
+                        adapters,
+                        names=adapter_names,
+                        task=task,
+                        image=image,
+                        model=model,
+                        api_key=api_key,
+                    ):
+                        for trial_index in range(trials):
+                            result = run_trial(
+                                task=task,
+                                adapter=adapter,
+                                budget=budget,
+                                history=history,
+                                runner_for=sandbox_runner_for(
+                                    image, limits=TRIAL_LIMITS, out_root=out_root
+                                ),
+                                timeout_s=timeout_s,
+                                trial_index=trial_index,
+                            )
+                            task_results.append(result)
+                            print(
+                                _trial_line(
+                                    len(results) + len(task_results), planned, result, trials
+                                ),
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                except (AssayError, OSError) as error:
+                    # `_task_image` still raises and the sandbox factory still refuses to
+                    # invent an environment (ADR-0027): what changed is that this loop answers
+                    # for one task rather than for the run. `TrialSetupError` arrives here too,
+                    # being an `AssayError`, and is recorded as the same state deliberately.
+                    unprovisioned[task.task_id] = str(error)
+                    print(
+                        f"assay run: {task.task_id} unmeasured: {error}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                else:
+                    results.extend(task_results)
+                # Both paths, every iteration: an interrupted run leaves the tasks it finished
+                # rather than nothing, and a task that failed is already named in the file.
+                write_result_set(out, _snapshot())
     except (AssayError, OSError) as error:
         # OSError as well as Assay's own: a repository path that is not there fails inside
         # ``subprocess`` before git is asked anything, and a docker client that is not installed
@@ -1087,13 +1202,27 @@ def run_run(
         print(f"assay run: cannot run {suite_path} against {repo}: {error}", file=sys.stderr)
         return EXIT_FAILED
 
+    if unprovisioned:
+        # Report yield, not just totals (CLAUDE.md): the shortfall is stated and its tasks are
+        # named, here as well as in the file, so an operator reading only the console is not
+        # left to infer it from a trial count that came up short.
+        print(
+            f"{len(unprovisioned)} of {len(tasks)} tasks unmeasured: "
+            f"{', '.join(sorted(unprovisioned))}",
+            file=sys.stderr,
+            flush=True,
+        )
     print(f"assay run: wrote {len(results)} trials to {out}", file=sys.stderr)
     print(f"read them with: assay report --results {out}", file=sys.stderr)
+    # Measured tasks, not the suite's: with a task unmeasured the old product was arithmetic a
+    # reader could check and find false, which is worse than no summary at all.
     print(
-        f"{len(tasks)} tasks x {len(adapter_names)} adapters x {trials} trials "
-        f"= {len(results)} trials recorded"
+        f"{len(tasks) - len(unprovisioned)} of {len(tasks)} tasks x {len(adapter_names)} "
+        f"adapters x {trials} trials = {len(results)} trials recorded"
     )
-    return EXIT_OK
+    # A run that measured nothing is a failed run however it got there: an empty result set
+    # published as a completed one is the outcome no reader could tell from a real zero.
+    return EXIT_OK if results else EXIT_FAILED
 
 
 def _task_adapters(
@@ -1124,17 +1253,25 @@ def _task_adapters(
 
 
 def _task_image(history: GitHistory, task: Task) -> str:
-    """Build the image ``task``'s trials run in, from a checkout of its base commit.
+    """Build the image ``task``'s trials run in, from a standalone checkout of its base commit.
 
     Neither the test patch nor any fix is applied first: the image holds the state a tool is
     handed. What a trial actually runs is the workspace it mounts rather than this tree, so an
     image per base commit is an environment per task and not a copy of the answer.
 
+    The context is a standalone checkout rather than the linked worktree a trial is given
+    (ADR-0062). A worktree's ``.git`` is a pointer file naming a clone the build cannot reach,
+    so a build backend that derives the project's version from git history finds nothing where
+    it looks - and ``build_task_image`` now refuses such a context outright rather than
+    building from it. A trial's workspace stays a worktree, and the split is deliberate: that
+    one is mounted into the tool's own container, and a standalone clone carries every ref,
+    including the commits a task's fix lives in.
+
     The dependency cutoff is the commit's own committer date (ADR-0021), which is the whole
     reason this is done here rather than inside :mod:`assay.sandbox`: reading it needs the
     clone, and the sandbox package holds no git history.
     """
-    with history.worktree(task.base_commit) as checkout:
+    with history.standalone_checkout(task.base_commit) as checkout:
         return build_task_image(
             context=checkout,
             base_commit=task.base_commit,
@@ -1195,7 +1332,7 @@ def _yield_lines(tallied: MiningYield) -> tuple[str, ...]:
         f"{tallied.commits_examined} single-parent commits examined -> "
         f"{tallied.accepted} valid tasks",
         f"{tallied.candidates} candidates reached the gate, "
-        f"{tallied.unprovisioned} unprovisioned; "
+        f"{len(tallied.unprovisioned)} unprovisioned; "
         "merges and the root commit are not examined at all",
         f"rejected: {reasons}",
     )
@@ -1207,7 +1344,7 @@ def _examined_line(index: int, found: MinedCommit) -> str:
     return f"[{index:>4}] {found.commit.sha[:12]} {verdict}: {found.commit.subject}"
 
 
-def _revalidated_line(task: Task, outcome: GateOutcome | None, valid: bool) -> str:
+def _revalidated_line(task: Task, outcome: GateOutcome | Unprovisioned, valid: bool) -> str:
     """One re-checked task, and - when it did not hold - which of the three ways it did not.
 
     An accepting outcome that crossed a different set of tests than the task records is the
@@ -1215,14 +1352,14 @@ def _revalidated_line(task: Task, outcome: GateOutcome | None, valid: bool) -> s
     """
     if valid:
         return f"{task.task_id} revalidates"
-    drifted = outcome is not None and outcome.rejection is None
+    drifted = isinstance(outcome, GateOutcome) and outcome.rejection is None
     reason = "the gate accepted a different set of tests" if drifted else _verdict(outcome)
     return f"{task.task_id} DOES NOT REVALIDATE: {reason}"
 
 
-def _verdict(outcome: GateOutcome | None) -> str:
+def _verdict(outcome: GateOutcome | Unprovisioned) -> str:
     """What the gate said about one commit, including its never having been asked."""
-    if outcome is None:
+    if isinstance(outcome, Unprovisioned):
         return "unprovisioned"
     return "accepted" if outcome.rejection is None else outcome.rejection.value
 

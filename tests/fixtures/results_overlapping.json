@@ -354,5 +354,7 @@
       },
       "outcome": "failed"
     }
-  ]
+  ],
+  "suite_task_count": 4,
+  "unprovisioned": {}
 }

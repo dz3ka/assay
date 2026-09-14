@@ -233,6 +233,8 @@ def test_a_report_pairs_every_tool_once_and_carries_a_line_per_result() -> None:
     result_set = ResultSet(
         schema_version=1,
         suite_hash=SUITE_HASH,
+        # One task in the suite, and both tools measured it: a complete run.
+        suite_task_count=1,
         results=(
             _result("task-a", "ground-truth", 0, Outcome.PASSED),
             _result("task-a", "null", 0, Outcome.FAILED),
@@ -260,7 +262,7 @@ def test_a_report_pairs_every_tool_once_and_carries_a_line_per_result() -> None:
 
 
 def test_a_report_over_one_tool_makes_no_comparisons() -> None:
-    result_set = ResultSet(schema_version=1, suite_hash=SUITE_HASH, results=())
+    result_set = ResultSet(schema_version=1, suite_hash=SUITE_HASH, results=(), suite_task_count=0)
 
     report = build_report(result_set, (_summary("only", 0.4, 0.6),))
 
@@ -275,6 +277,7 @@ def test_a_repeated_task_adapter_trial_triple_is_reported_as_it_was_recorded() -
     result_set = ResultSet(
         schema_version=1,
         suite_hash=SUITE_HASH,
+        suite_task_count=1,
         results=(duplicated, duplicated, _result("task-a", "null", 0, Outcome.PASSED)),
     )
 
@@ -294,6 +297,7 @@ def test_task_lines_carry_no_provenance_at_m0() -> None:
     result_set = ResultSet(
         schema_version=1,
         suite_hash=SUITE_HASH,
+        suite_task_count=1,
         results=(_result("task-a", "null", 0, Outcome.NOT_SCORED),),
     )
 

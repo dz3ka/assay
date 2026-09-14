@@ -207,21 +207,41 @@ def test_a_mining_yield_refuses_a_negative_rejection_count() -> None:
         )
 
 
-def test_a_mining_yield_counts_a_commit_with_no_environment_outside_the_eight_reasons() -> None:
+def test_a_mining_yield_names_each_unprovisioned_commit_with_its_reason() -> None:
     # A commit whose workspace could not be provisioned was examined, was never a candidate,
-    # and belongs under no rejection reason - the gate never spoke about it.
+    # and belongs under no rejection reason - the gate never spoke about it. It is named, with
+    # the failure's own words, rather than counted: "8 unprovisioned" says nothing a reader can
+    # act on, and the reason was the whole of ADR-0071's finding.
+    reasons = {f"{index:040x}": f"uv pip install failed at commit {index}" for index in range(8)}
+
     reported = _yield(
-        commits_examined=10, candidates=2, accepted=2, rejected=_counts(), unprovisioned=8
+        commits_examined=10, candidates=2, accepted=2, rejected=_counts(), unprovisioned=reasons
     )
 
-    assert reported.unprovisioned == 8
+    assert dict(reported.unprovisioned) == reasons
+    assert len(reported.unprovisioned) == 8
     assert reported.candidates == 2
 
 
-def test_a_mining_yield_written_without_the_unprovisioned_count_still_partitions() -> None:
-    # The field defaults to zero so a yield that predates it, and the fixture oracle that
-    # constructs one without it, still describe the same partition.
-    assert _yield().unprovisioned == 0
+def test_a_yield_whose_unprovisioned_commits_overrun_commits_examined_is_refused() -> None:
+    # The partition is counted off the mapping's size, so naming one commit more than the walk
+    # examined is the same overstatement a count of one too many was.
+    reasons = {f"{index:040x}": "no pyproject.toml" for index in range(9)}
+
+    with pytest.raises(ValidationError, match="partition commits examined"):
+        _yield(
+            commits_examined=10,
+            candidates=2,
+            accepted=2,
+            rejected=_counts(),
+            unprovisioned=reasons,
+        )
+
+
+def test_a_mining_yield_written_without_the_unprovisioned_commits_still_partitions() -> None:
+    # The field defaults to empty so the fixture oracle, which constructs a yield without it,
+    # still describes the same partition.
+    assert dict(_yield().unprovisioned) == {}
 
 
 @pytest.mark.parametrize(

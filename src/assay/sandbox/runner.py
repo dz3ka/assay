@@ -26,7 +26,7 @@ from typing import Final
 from assay.host.junit import build_test_report
 from assay.host.process import CommandResult, CommandTimeoutError
 from assay.mine.models import TestReport
-from assay.mine.protocols import RunnerFactory, TestRunner
+from assay.mine.protocols import RunnerFactory, TestRunner, Unprovisioned
 from assay.sandbox.container import OUT_DIR, run_in_sandbox
 from assay.sandbox.errors import SandboxError
 from assay.sandbox.image import VENV_PYTHON
@@ -141,13 +141,13 @@ def sandbox_runner_for(image_tag: str, *, limits: ContainerLimits, out_root: Pat
     per workspace and nothing left to fail: a workspace is an argument to
     :meth:`SandboxTestRunner.run`, not a thing the runner is made from.
 
-    It therefore never answers ``None``. ``None`` means "this commit cannot be given an
-    environment its tests could run in", and a commit whose image would not build never became a
-    task in the first place.
+    It therefore never answers :class:`~assay.mine.Unprovisioned`. That means "this commit cannot
+    be given an environment its tests could run in", and a commit whose image would not build
+    never became a task in the first place.
     """
     runner = SandboxTestRunner(image_tag, limits=limits, out_root=out_root)
 
-    def make_runner(workspace: Path) -> TestRunner | None:
+    def make_runner(workspace: Path) -> TestRunner | Unprovisioned:
         return runner
 
     return make_runner

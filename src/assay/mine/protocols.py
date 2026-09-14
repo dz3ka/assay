@@ -14,6 +14,7 @@ names exist - never whether the signatures agree - so conformance is proved stat
 
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -75,6 +76,19 @@ class TestRunner(Protocol):
         """
 
 
+@dataclass(frozen=True)
+class Unprovisioned:
+    """A workspace no environment could be built for, and the failure's own words for why.
+
+    A value rather than a bare ``str`` so that "no runner" cannot be mistaken for any other
+    string a seam might hand back, and rather than ``None`` so that the reason survives the trip
+    through the miner to the line that prints it (ADR-0073). ``reason`` is whatever the host
+    seam caught, verbatim; it may span several lines.
+    """
+
+    reason: str
+
+
 # A workspace's test runner, made once the workspace exists.
 #
 # The third seam, and the one M1's plan did not foresee. A ``TestRunner`` is bound to the
@@ -84,14 +98,16 @@ class TestRunner(Protocol):
 # one. Everything host-shaped therefore stays in the callable the CLI closes over, and this
 # package still never learns that uv or pytest exist.
 #
-# ``None`` means "this workspace could not be given an environment its tests could run in".
-# Provisioning is per commit - a repository mined back past the commit that introduced its
-# ``pyproject.toml`` has commits that simply cannot be installed - so a setup failure is a
-# property of the commit and must not end the walk. It is the *host-side* closure that catches
-# ``assay.host.EnvironmentSetupError`` and returns ``None`` here, which is what keeps
-# ``assay.mine`` from importing ``assay.host``.
+# :class:`Unprovisioned` means "this workspace could not be given an environment its tests could
+# run in", and says why. Provisioning is per commit - a repository mined back past the commit
+# that introduced its ``pyproject.toml`` has commits that simply cannot be installed - so a
+# setup failure is a property of the commit and must not end the walk. It is the *host-side*
+# closure that catches ``assay.host.EnvironmentSetupError`` and returns its sentence here, which
+# is what keeps ``assay.mine`` from importing ``assay.host``.
 #
-# Deliberately the same shape as ``History.apply_patch``'s False above: an ordinary, countable
-# outcome rather than an exception. It is counted as ``MiningYield.unprovisioned`` - outside
-# the eight rejection reasons, because the gate never spoke about it.
-type RunnerFactory = Callable[[Path], TestRunner | None]
+# Deliberately the same kind of answer as ``History.apply_patch``'s False above: an ordinary,
+# countable outcome rather than an exception. It is named in
+# ``MiningYield.unprovisioned`` - outside the eight rejection reasons, because the gate never
+# spoke about it - with the reason beside it, as a result set names its unmeasured tasks
+# (ADR-0073).
+type RunnerFactory = Callable[[Path], TestRunner | Unprovisioned]

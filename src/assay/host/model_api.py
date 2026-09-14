@@ -26,6 +26,15 @@ own source text, so the endpoint is the trust boundary (plan §7).
   is not the declared shape raises :class:`ModelTransportError`, which the adapter records as
   ``Attempt.error``; nothing here raises an exception the adapter has not been told about.
 
+There are two transports here and the first property reads differently for each, which is why
+they are two classes rather than one with a switch (ADR-0059). :class:`HttpModelTransport`
+carries an API key and may only speak ``https`` to a host in :data:`ALLOWED_HOSTS`.
+:class:`LocalModelTransport` carries no key at all and may only speak ``http`` to the literal
+address ``127.0.0.1``, which is a model served on this machine: those bytes never leave it, so
+they are not the thing the allowlist controls, and :data:`ALLOWED_HOSTS` is unchanged by their
+existence. Everything below the endpoint check - the redirect refusal, the size cap, the one
+error, the strict parse - is shared, because it is one policy about a socket and not two.
+
 TLS verification is ``urllib``'s default and is never disabled - there is no context argument
 here to disable it with. What this module does *not* do is judge the completion: a response
 truncated at ``max_tokens`` arrives as text like any other and fails later as a diff that will
@@ -120,9 +129,10 @@ def open_request(request: Request, timeout_s: float) -> AbstractContextManager[H
     cannot be exercised without a server: the tests drive it against a loopback
     ``http.server`` - including the redirect it must refuse - and stub it everywhere else.
 
-    The scheme is not checked here; the transport has already refused anything that is not
-    ``https`` at an allowlisted host, and putting the check in both places would make the
-    loopback test impossible without proving anything the allowlist does not already prove.
+    The scheme is not checked here; whichever transport built the request has already refused
+    an endpoint that is not its own - ``https`` at an allowlisted host, or ``http`` at
+    ``127.0.0.1`` - and putting the check in both places would make the loopback test
+    impossible without proving anything those two checks do not already prove.
     """
     reply: AbstractContextManager[HttpReply] = _OPENER.open(request, timeout=timeout_s)
     return reply
@@ -185,33 +195,109 @@ class HttpModelTransport:
             },
         )
 
-        try:
-            with self._opener(request, float(timeout_s)) as reply:
-                status = reply.status
-                # One byte past the cap, so "there was more" is answerable without reading it.
-                raw = reply.read(_MAX_RESPONSE_BYTES + 1)
-        except HTTPError as error:
-            # The status carries the meaning M3 cares about: 401 is a bad key, 400 or 402 is
-            # an account with no funds, 429 is a rate limit, and each of them is a trial that
-            # errored rather than a tool that failed. Quoted, capped, and never the key.
-            raise ModelTransportError(
-                f"the model endpoint refused the request: HTTP {error.code}{_excerpt(error)}"
-            ) from error
-        except OSError as error:
-            # URLError, socket timeouts and TLS failures are all OSError, and there is nothing
-            # to tell apart: the call did not happen, so the trial is errored either way.
-            raise ModelTransportError(
-                f"the model endpoint could not be reached within {timeout_s}s: {error}"
-            ) from error
+        return _parse(_post(self._opener, request, timeout_s))
 
-        if status != 200:
-            raise ModelTransportError(f"the model endpoint answered HTTP {status}, not 200")
-        if len(raw) > _MAX_RESPONSE_BYTES:
-            raise ModelTransportError(
-                f"the model endpoint's response is too large to parse: over "
-                f"{_MAX_RESPONSE_BYTES} bytes"
-            )
-        return _parse(raw)
+
+class LocalModelTransport:
+    """One HTTP call to a model served on this machine, per :class:`ModelTransport`.
+
+    The same protocol as :class:`HttpModelTransport`, a different rule about where it may
+    point, and no API key anywhere in its signature - a daemon listening on loopback is not
+    authenticated, and a class that cannot be handed a credential cannot leak one.
+
+    Two classes rather than one with a dialect switch, and that is the decision rather than an
+    accident of layout (ADR-0059): a single class holding both "https at an allowlisted host"
+    and "http at 127.0.0.1" would make a mistyped hosted endpoint reachable through the
+    loopback branch. Two classes make that a type error at the call site instead. They live in
+    the same module because the egress fence names one module path, and a second module that
+    opens a socket would be a second exemption.
+
+    This is not a widening of :data:`ALLOWED_HOSTS`, which is untouched: that frozenset is the
+    control on bytes *leaving* this machine, and a POST to 127.0.0.1 does not leave it. The
+    keyed transport above still refuses a loopback endpoint, which is correct - pointing the
+    path that carries a credential at a local forwarder is exactly the routing-around the
+    allowlist exists to stop.
+    """
+
+    def __init__(self, *, endpoint: str, opener: HttpOpener = open_request) -> None:
+        """Refuse an endpoint that is not this machine, before anything is sent."""
+        self._endpoint = _checked_local_endpoint(endpoint)
+        self._opener = opener
+
+    def send(
+        self,
+        *,
+        model: str,
+        system: str,
+        user: str,
+        max_output_tokens: int,
+        timeout_s: int,
+    ) -> ModelResponse:
+        """Send one prompt, once, and parse exactly what came back.
+
+        The request is the OpenAI chat-completions shape, which is what Ollama serves on
+        ``/v1/chat/completions``: the system prompt is a message with ``role: "system"`` rather
+        than a top-level field, and ``stream`` is explicitly ``false`` so the reply is one JSON
+        object rather than a sequence of events this module has no reader for.
+
+        Raises:
+            ModelTransportError: for every failure of the seam - a daemon that is not running,
+                a timeout, an HTTP status, an oversized body, or a payload that is not the
+                declared shape.
+        """
+        body = json.dumps(
+            {
+                "model": model,
+                "max_tokens": max_output_tokens,
+                "stream": False,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            }
+        ).encode("utf-8")
+        request = Request(
+            self._endpoint,
+            data=body,
+            method="POST",
+            headers={"content-type": "application/json"},
+        )
+        return _parse_chat_completion(_post(self._opener, request, timeout_s))
+
+
+def _post(opener: HttpOpener, request: Request, timeout_s: int) -> bytes:
+    """Send ``request`` once and return its body, or raise the one error the adapter knows.
+
+    Both transports' bounded consumption, in one place because it is one policy: no retry, a
+    timeout on the socket, a status that must be 200, and a body read one byte past the cap so
+    that "there was more" is answerable without having spent the memory to find out.
+    """
+    try:
+        with opener(request, float(timeout_s)) as reply:
+            status = reply.status
+            # One byte past the cap, so "there was more" is answerable without reading it.
+            raw = reply.read(_MAX_RESPONSE_BYTES + 1)
+    except HTTPError as error:
+        # The status carries the meaning M3 cares about: 401 is a bad key, 400 or 402 is
+        # an account with no funds, 429 is a rate limit, and each of them is a trial that
+        # errored rather than a tool that failed. Quoted, capped, and never the key.
+        raise ModelTransportError(
+            f"the model endpoint refused the request: HTTP {error.code}{_excerpt(error)}"
+        ) from error
+    except OSError as error:
+        # URLError, socket timeouts and TLS failures are all OSError, and there is nothing
+        # to tell apart: the call did not happen, so the trial is errored either way.
+        raise ModelTransportError(
+            f"the model endpoint could not be reached within {timeout_s}s: {error}"
+        ) from error
+
+    if status != 200:
+        raise ModelTransportError(f"the model endpoint answered HTTP {status}, not 200")
+    if len(raw) > _MAX_RESPONSE_BYTES:
+        raise ModelTransportError(
+            f"the model endpoint's response is too large to parse: over {_MAX_RESPONSE_BYTES} bytes"
+        )
+    return raw
 
 
 def _checked_endpoint(raw: str) -> str:
@@ -243,6 +329,41 @@ def _checked_endpoint(raw: str) -> str:
         raise ModelTransportError(
             f"the model endpoint host {split.hostname!r} is not allowlisted; Assay sends a "
             f"prompt to {allowed} and nowhere else"
+        )
+    return raw
+
+
+def _checked_local_endpoint(raw: str) -> str:
+    """Return ``raw`` unchanged, or refuse an endpoint that is not a model on this machine.
+
+    Three refusals, and each one is narrower than it looks on purpose (ADR-0059). Credentials
+    first, so a key written into the URL is never echoed into an error, a log or a report.
+    Then ``http`` only: the endpoint this class exists for is a plaintext daemon on loopback,
+    and a TLS listener at that address is something else - a tunnel, a proxy - which is a
+    different decision than the one taken here. Then the host must be the **literal**
+    ``127.0.0.1``: ``localhost`` and ``::1`` are refused because a name is resolved by a hosts
+    file this harness does not own, and a machine where that file points ``localhost``
+    elsewhere would send the repository under evaluation there.
+
+    Refused rather than repaired, like every value on its way into something irreversible in
+    this codebase: there is no un-sending a prompt that carried the repository's own source.
+    """
+    split = urlsplit(raw)
+    if split.username is not None or split.password is not None:
+        raise ModelTransportError(
+            "the local model endpoint must not carry credentials in its URL; a model served on "
+            "this machine is not authenticated and this transport sends no key"
+        )
+    if split.scheme != "http":
+        raise ModelTransportError(
+            f"the local model endpoint must be http, not {split.scheme!r}: it is a plaintext "
+            "daemon on this machine, and anything else at that address is not that daemon"
+        )
+    if split.hostname != "127.0.0.1":
+        raise ModelTransportError(
+            f"the local model endpoint host {split.hostname!r} is not 127.0.0.1; it must be "
+            "that literal address, because a name is resolved by a file this harness does not "
+            "own and the prompt carries the repository under evaluation"
         )
     return raw
 
@@ -298,6 +419,59 @@ def _parse(raw: bytes) -> ModelResponse:
         text="".join(texts),
         input_tokens=_token_count(usage, "input_tokens"),
         output_tokens=_token_count(usage, "output_tokens"),
+    )
+
+
+def _parse_chat_completion(raw: bytes) -> ModelResponse:
+    """Read the OpenAI chat-completion shape out of ``raw``, or refuse it.
+
+    **This shape was documentation. On 2026-09-09 it became measurement.** It is what Ollama's
+    OpenAI-compatible route is documented to return for ``/v1/chat/completions`` -
+    ``choices[0].message.content`` and ``usage.prompt_tokens``/``usage.completion_tokens`` - and
+    a live ``qwen2.5-coder:7b`` daemon answered it here through the CLI on that date. Every
+    field this function reads was present and well-typed on real bodies: two ``naive-local``
+    trials parsed without raising and recorded non-zero token counts in both directions
+    (275/264 and 237/231) alongside the diff text the model wrote. **No correction to this
+    function was needed.** What was *not* done is a byte-level comparison of a recorded body
+    against the test fixture - the raw bodies were not retained - so this records that the
+    fields parse, not that the daemon's body is identical to the literal in the tests.
+
+    The caution below is kept rather than deleted, because it is what keeps a *future* shape
+    change loud. Anything the daemon does differently must still arrive as a
+    :class:`ModelTransportError` rather than a plausible number: nothing here defaults,
+    coerces, or reads a missing token count as zero, since a fabricated count in a report about
+    token counts is the failure this project exists to be incapable of.
+
+    Only the first choice is read. The request asks for one completion and never sets ``n``, so
+    a second choice is a shape this module did not ask for rather than a second answer.
+    """
+    try:
+        payload: object = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ModelTransportError(f"the model endpoint's response is not JSON: {error}") from error
+    if not isinstance(payload, dict):
+        raise ModelTransportError("the model endpoint's response is not a JSON object")
+
+    choices: object = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ModelTransportError("the model endpoint's response has no non-empty 'choices' list")
+    choice: object = choices[0]
+    if not isinstance(choice, dict):
+        raise ModelTransportError("the model endpoint's first choice is not a JSON object")
+    message: object = choice.get("message")
+    if not isinstance(message, dict):
+        raise ModelTransportError("the model endpoint's first choice has no 'message' object")
+    content: object = message.get("content")
+    if not isinstance(content, str):
+        raise ModelTransportError("the model endpoint's message has no 'content' string")
+
+    usage: object = payload.get("usage")
+    if not isinstance(usage, dict):
+        raise ModelTransportError("the model endpoint's response has no 'usage' object")
+    return ModelResponse(
+        text=content,
+        input_tokens=_token_count(usage, "prompt_tokens"),
+        output_tokens=_token_count(usage, "completion_tokens"),
     )
 
 

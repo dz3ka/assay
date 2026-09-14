@@ -57,8 +57,8 @@ class EnvironmentSetupError(AssayError):
     past the commit that introduced its packaging has commits that simply cannot be installed,
     and a walk that died on the first of them would report no yield at all.
 
-    The caller that wires this into the miner catches it and hands ``None`` back through
-    :data:`assay.mine.protocols.RunnerFactory`; the commit is then counted as
+    The caller that wires this into the miner catches it and hands its sentence back through
+    :data:`assay.mine.protocols.RunnerFactory` as ``Unprovisioned``; the commit is then named in
     ``MiningYield.unprovisioned``, examined but never a candidate.
     """
 

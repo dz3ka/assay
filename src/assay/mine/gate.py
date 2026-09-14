@@ -20,6 +20,7 @@ from collections.abc import Sequence
 from typing import Final
 
 from assay.mine.models import GateOutcome, GateRejection, NodeId, TestReport, TestStatus
+from assay.mine.protocols import Unprovisioned
 from assay.suite import Task
 
 # Two runs of the ground truth, compared. One run cannot distinguish "fixed" from "flaky",
@@ -119,7 +120,7 @@ def decide_gate(red: TestReport, greens: Sequence[TestReport]) -> GateOutcome:
     return GateOutcome(rejection=None, fail_to_pass=fail_to_pass, pass_to_pass=pass_to_pass)
 
 
-def revalidates(task: Task, outcome: GateOutcome | None) -> bool:
+def revalidates(task: Task, outcome: GateOutcome | Unprovisioned) -> bool:
     """Whether re-running the gate reproduced the sets ``task`` records - ``assay validate``.
 
     An accepting outcome is not enough. The gate accepts on whatever crosses red to green
@@ -130,7 +131,8 @@ def revalidates(task: Task, outcome: GateOutcome | None) -> bool:
     null adapter passes - and the null adapter bracketing every real result at zero is a
     CLAUDE.md non-negotiable. Revalidating therefore means reproducing both recorded sets.
 
-    An outcome of ``None`` - a workspace that could not be provisioned - is not valid either.
+    An :class:`~assay.mine.protocols.Unprovisioned` outcome - a workspace that could not be
+    provisioned - is not valid either.
     A suite that cannot be re-proved is not a suite that has been re-proved, and ``assay
     validate`` exits 1 on it. The CLI may format the difference between "invalid" and "could
     not be checked"; it may not decide validity, which is why the rule is here beside
@@ -143,7 +145,7 @@ def revalidates(task: Task, outcome: GateOutcome | None) -> bool:
     accepts silent erosion of ``pass_to_pass`` - a regression guard the suite claims and no
     longer has - which is the same overstatement in the other set.
     """
-    if outcome is None or outcome.rejection is not None:
+    if isinstance(outcome, Unprovisioned) or outcome.rejection is not None:
         return False
     return set(outcome.fail_to_pass) == set(task.fail_to_pass) and set(outcome.pass_to_pass) == set(
         task.pass_to_pass

@@ -130,6 +130,48 @@ _REDACTION_STATEMENT = (
 )
 
 
+def _coverage_statement(report: Report) -> str:
+    """What this report measured, out of what the suite held, and what it could not measure.
+
+    Printed on every report in both prose formats, including the run that missed nothing: a
+    coverage line that appeared only when a task was unprovisioned would make its absence the
+    report's way of claiming completeness, which is the unexplained blank ADR-0035 refuses and
+    the same rule the costs section already follows (ADR-0046).
+
+    The unprovisioned tasks are named rather than counted, because the reader's next question
+    is which ones - and on a redacted report the names are the same ``ident`` tokens the trial
+    log prints, so the answer can be checked against it rather than taken on trust (ADR-0070).
+
+    A file can hold tasks that are neither measured nor unprovisioned
+    (``ResultSet._check_coverage`` compares with ``<=``, because the set is written after every
+    task - ADR-0069). Those are counted, in both branches, and given no cause: the file looks the
+    same whether its run is still writing, was killed, or crashed, so the clause says only that
+    the file has nothing on them. Left out, the two counts would read as adding up to the suite,
+    which is absence making a claim (ADR-0070). The clause carries no identifier, so it has
+    nothing to redact, and a complete run prints no clause at all.
+
+    Render-local, like the captions above it: a prose field in the schema would freeze this
+    wording as a compatibility promise (ADR-0008).
+    """
+    noun = "task" if report.suite_tasks == 1 else "tasks"
+    measured = f"{report.measured_tasks} of {report.suite_tasks} {noun} measured"
+    gap = report.suite_tasks - report.measured_tasks - len(report.unprovisioned_tasks)
+    remainder = (
+        f"; {gap} {'has' if gap == 1 else 'have'} no result and no recorded failure in this file"
+        if gap > 0
+        else ""
+    )
+    if not report.unprovisioned_tasks:
+        return f"{measured}; none were left unprovisioned{remainder}"
+    named = ", ".join(report.unprovisioned_tasks)
+    count = len(report.unprovisioned_tasks)
+    verb = "appears" if count == 1 else "appear"
+    return (
+        f"{measured}; {count} could not be provisioned and so {verb} "
+        f"in no number on this page: {named}{remainder}"
+    )
+
+
 def _price_provenance(report: Report) -> str:
     """Where a report's money came from, in the reader's own words or not at all."""
     if report.prices_source is None:
@@ -250,6 +292,11 @@ def render_text(report: RedactedReport) -> str:
     under Tools, what a trial line counts under Trials - unwrapped, because wrapping would put
     a line width between the text and the constants the tests pin.
 
+    The header block carries the two claims that are about the whole document rather than any
+    one table: what has been redacted, and what was measured out of what. The coverage line is
+    above every number for the reason the redaction line is - a denominator a reader meets
+    after the trial log is a denominator for a report they have already finished (ADR-0070).
+
     The parameter is a :data:`~assay.report.model.RedactedReport` because the header states
     that every identifier and path *here* is a token, and only :func:`~assay.report.redact`
     mints one. This function performs no check of its own: it could not tell a token from text
@@ -269,7 +316,8 @@ def render_text(report: RedactedReport) -> str:
     ]
 
     sections = [
-        f"Assay report\nSuite: {report.suite_hash}\nRedaction: {_REDACTION_STATEMENT}",
+        f"Assay report\nSuite: {report.suite_hash}\nRedaction: {_REDACTION_STATEMENT}\n"
+        f"Coverage: {_coverage_statement(report)}",
         "\n".join([f"Tools ({_INTERVAL_METHODS})", *tools]),
         "\n".join(["Comparisons", *comparisons]),
         "\n".join([f"Costs ({_price_provenance(report)}; {_COST_METHOD})", *costs]),
@@ -467,9 +515,10 @@ def render_html(report: RedactedReport) -> str:
     tell anybody that it was opened.
 
     Every caveat is a caption on the table it qualifies, escaped like every other string on
-    the page: there is no text here the document trusts. The exception is the redaction
-    statement, which qualifies the whole document and so sits under the suite hash rather than
-    on any one table.
+    the page: there is no text here the document trusts. The exceptions are the redaction
+    statement and the coverage line, which qualify the whole document - every rate below them
+    is over the tasks the coverage line counts - and so sit under the suite hash rather than on
+    any one table (ADR-0070).
 
     The viewport declaration is the page's only concession to a device: the report is one column
     of wide tables, and without it a phone lays the document out at a desktop width and scales
@@ -502,6 +551,7 @@ def render_html(report: RedactedReport) -> str:
         "<h1>Assay report</h1>",
         f"<p>Suite: <code>{_escape(report.suite_hash)}</code></p>",
         f'<p class="redaction">Redaction: {_escape(_REDACTION_STATEMENT)}</p>',
+        f'<p class="coverage">Coverage: {_escape(_coverage_statement(report))}</p>',
         "<h2>Tools</h2>",
         *_html_tools_table(report),
         "<h2>Comparisons</h2>",

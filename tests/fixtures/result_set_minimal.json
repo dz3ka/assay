@@ -46,5 +46,7 @@
       },
       "outcome": "passed"
     }
-  ]
+  ],
+  "suite_task_count": 1,
+  "unprovisioned": {}
 }

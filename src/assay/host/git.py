@@ -7,12 +7,22 @@ passes :func:`_checked_path` before it is used, and a rejected path is a :class:
 rather than a quiet skip - a task built from a half-read commit would be a measurement about
 nothing (CLAUDE.md, "report yield, not just totals": a refusal has to be countable).
 
-Two blast-radius rules are structural rather than advisory. Checkouts happen in a throwaway
-``git worktree`` under ``worktree_root``, so nothing here can dirty the user's clone; and
-Assay never clones or fetches, so ``repo`` is a path that already existed and ``repo_url`` is
+Two blast-radius rules are structural rather than advisory. Checkouts happen under
+``worktree_root`` and are destroyed on the way out, so nothing here can dirty the user's clone;
+and Assay never *fetches*, so ``repo`` is a path that already existed and ``repo_url`` is
 a label rather than a network operation - a declared ``origin`` where there is one, and
 otherwise a name derived from the history itself (SPEC §5.1 - the repository never leaves the
-machine; ADR-0052 - and its name never carries where the machine kept it).
+machine; ADR-0052 - and its name never carries where the machine kept it). The one ``clone``
+this module runs is ``--local`` from that same already-existing path (ADR-0062), which reads
+the user's clone and reaches no network; the fence in ``tests/host/test_network_egress`` is
+untouched by it.
+
+There are **two kinds of checkout and the difference is load-bearing** (ADR-0062).
+:meth:`GitHistory.worktree` yields a linked worktree, whose ``.git`` is a pointer file and
+whose history is therefore unreadable from inside it - that is what a trial mounts, and it is
+why a tool under test cannot read a task's fix out of its own workspace.
+:meth:`GitHistory.standalone_checkout` yields a real repository carrying every ref, which is
+what a task *image* is built from and must never be mounted into a trial.
 
 This class satisfies the ``History`` protocol structurally, the way the M0 adapters satisfy
 ``Adapter`` (:mod:`assay.adapters.protocol`): no base class, conformance proved by mypy at the
@@ -22,9 +32,10 @@ one place a ``History`` is annotated.
 import os
 import re
 import shutil
+import stat
 import tempfile
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -116,6 +127,39 @@ def checkout_state(path: Path, *, timeout_s: int = _QUERY_TIMEOUT_S) -> Checkout
         head=_checked_revision(head.stdout.strip()),
         changed=tuple(entry for entry in status.stdout.split("\n") if entry),
     )
+
+
+def checkout_description(path: Path, *, timeout_s: int = _QUERY_TIMEOUT_S) -> str:
+    """What history ``path`` can see of itself, as ``git describe`` spells it.
+
+    Module level for the reason :func:`checkout_state` is: the question is about an arbitrary
+    directory rather than about the clone a :class:`GitHistory` is bound to. It is asked of the
+    *build context* on purpose - a checkout made by ``git clone --local`` is only assumed to
+    have carried the parent's tags, and this is the value that would differ if it had not, so
+    asking the context removes the assumption instead of restating it (ADR-0063).
+
+    ``--tags`` so a lightweight tag counts, ``--long`` so a checkout that sits exactly on a tag
+    and one that sits a commit past it are spelled differently, ``--always`` so a repository
+    with no tag at all is an answer rather than a failure, and ``--abbrev=40`` because an
+    abbreviation is as long as a repository needs it to be and this string goes into a content
+    address.
+
+    Raises:
+        GitError: if ``path`` is not a checkout, or if git otherwise refused. A directory git
+            cannot describe has no visible history for an address to name, so it is the same
+            refusal :func:`checkout_state` gives rather than an empty string.
+    """
+    found = _run_git(
+        "describe",
+        "--tags",
+        "--long",
+        "--always",
+        "--abbrev=40",
+        cwd=path,
+        env=_git_env(),
+        timeout_s=timeout_s,
+    )
+    return found.stdout.strip()
 
 
 class GitHistory:
@@ -284,6 +328,69 @@ class GitHistory:
             shutil.rmtree(path, ignore_errors=True)
             self._git("worktree", "prune", check=False)
 
+    @contextmanager
+    def standalone_checkout(self, commit: str) -> Iterator[Path]:
+        """A checkout of ``commit`` whose ``.git`` is a real directory, destroyed on the way out.
+
+        ``git clone --local --no-checkout`` then ``checkout --detach``. **NOT for a trial
+        workspace** - it carries every ref, including the commits a task's fix lives in, so
+        mounting one into a container would hand the tool under test a machine-readable answer
+        key that ``--read-only`` and ``--cap-drop ALL`` do nothing about. Its one caller is the
+        image build (ADR-0062), whose context is never mounted: at run time ``/workspace`` is
+        replaced by a bind mount, so the history inside the image is inert.
+
+        ``--local`` rather than a copy of the directory: it hardlinks the object store, so the
+        clone costs a directory walk instead of a second copy of the history, and it brings the
+        tags with it - which is the whole point, since a build backend that versions the project
+        from ``git describe`` has nothing to describe from otherwise. ``--no-checkout`` because
+        the clone's default branch is not the commit wanted, and writing one tree to throw it
+        away is the one part of this that is not cheap.
+
+        ``core.logallrefupdates=false`` and ``remote remove origin`` are what keep this machine
+        out of the image the clone becomes (ADR-0065). Both are needed and neither is the other:
+        without the flag ``.git/logs/HEAD`` records the source path, the operator's name and
+        email and a wall clock in one plaintext line, and ``remote remove origin`` never touches
+        it; the flag alone leaves the ``[remote "origin"]`` and ``[branch ...]`` stanzas in
+        ``.git/config``, which hold the path again. What that buys is the removal of a host path,
+        an identity and a clock - not byte-identity across hosts, which is not on offer:
+        ``.git/index`` records per-file stat data and ``.git/config`` records platform-derived
+        ``filemode`` and ``ignorecase``.
+
+        Removal is ``rmtree`` alone: this clone is a repository of its own rather than an entry
+        in the user's, so there is no administrative record of it to prune.
+        """
+        checked = _checked_revision(commit)
+        self._worktree_root.mkdir(parents=True, exist_ok=True)
+        # uuid4 for the reason `worktree` uses one: two trials of one task may check the same
+        # commit out at once, and `git clone` refuses a destination that already exists.
+        path = self._worktree_root / f"clone-{uuid.uuid4().hex}"
+        self._git(
+            "clone",
+            "--local",
+            "--no-checkout",
+            # Named rather than left to the default, because the default is configurable:
+            # `clone.defaultRemoteName` in an operator's own config would name the remote
+            # something else, and the removal below - which asks for `origin` by name - would
+            # then fail on their machine and take every image build with it.
+            "--origin",
+            "origin",
+            # Set on the clone itself rather than unset afterwards: the reflog is written by the
+            # clone, so a repository configured after the fact has already recorded the line.
+            "-c",
+            "core.logallrefupdates=false",
+            str(self._repo),
+            str(path),
+            timeout_s=_CHECKOUT_TIMEOUT_S,
+        )
+        try:
+            # The remote is the other half, and it is dropped before anything else so that a
+            # failure here is a failure of the checkout rather than a clone left half-scrubbed.
+            self._git("remote", "remove", "origin", cwd=path, timeout_s=_CHECKOUT_TIMEOUT_S)
+            self._git("checkout", "--detach", checked, cwd=path, timeout_s=_CHECKOUT_TIMEOUT_S)
+            yield path
+        finally:
+            _remove_repository(path)
+
     def apply_patch(self, workspace: Path, patch: str) -> bool:
         """Try to apply ``patch`` inside ``workspace``; report whether it applied.
 
@@ -332,6 +439,30 @@ class GitHistory:
             timeout_s=timeout_s,
             check=check,
         )
+
+
+def _remove_repository(path: Path) -> None:
+    """Delete a checkout, including the read-only files its own object store is made of.
+
+    Git writes a loose object at mode 444 - the content is addressed by its own hash, so it is
+    never meant to be rewritten - and on Windows that bit makes the file undeletable rather
+    than merely unwritable. A plain :func:`shutil.rmtree` therefore leaves the whole ``.git``
+    behind, which for :meth:`GitHistory.standalone_checkout` is a second copy of the repository
+    per build sitting in the user's temp space.
+
+    Errors are swallowed after the retry, for the reason ``worktree``'s cleanup is unchecked:
+    this runs while an exception from the body may be in flight, and losing that exception to a
+    cleanup failure would hide the reason the run stopped.
+    """
+
+    def clear_read_only(action: Callable[..., object], name: str, failure: BaseException) -> None:
+        try:
+            os.chmod(name, stat.S_IWRITE)  # noqa: PTH101 - `name` is what rmtree hands back
+            action(name)
+        except OSError:
+            pass
+
+    shutil.rmtree(path, onexc=clear_read_only)
 
 
 def _git_env() -> dict[str, str]:

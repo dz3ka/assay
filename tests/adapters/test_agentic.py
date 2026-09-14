@@ -28,7 +28,7 @@ import pytest
 # to collect any module-level name starting with "Test", and warns about these three otherwise.
 from assay.adapters import Adapter, AgenticCliAdapter, ProcessOutput, ToolProcess
 from assay.host import GitHistory, minimal_env, run_command
-from assay.mine import CommitRef
+from assay.mine import CommitRef, Unprovisioned
 from assay.mine import TestReport as Report
 from assay.mine import TestRunner as Runner
 from assay.mine import TestStatus as Status
@@ -219,11 +219,11 @@ class _RecordingFactory:
     "No container was started" cannot be read off a verdict; it is this list staying empty.
     """
 
-    def __init__(self, runner: Runner | None) -> None:
+    def __init__(self, runner: Runner | Unprovisioned) -> None:
         self._runner = runner
         self.workspaces: list[Path] = []
 
-    def __call__(self, workspace: Path) -> Runner | None:
+    def __call__(self, workspace: Path) -> Runner | Unprovisioned:
         self.workspaces.append(workspace)
         return self._runner
 

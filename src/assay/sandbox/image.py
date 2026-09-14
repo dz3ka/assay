@@ -3,22 +3,36 @@
 A trial has to run the repository's tests against dependencies that were installed *before* the
 trial started (SPEC §5.3, ADR-0006) - otherwise a tool can ``pip install`` its way to a passing
 test, and one will. So the environment is baked into an image at mining time and the trial gets
-no network at all. The image is built from the worktree of the commit it belongs to, which makes
+no network at all. The image is built from a checkout of the commit it belongs to, which makes
 it as pinned as ADR-0017 and ADR-0019 need it to be: the environment a trial runs in is the
 environment the red->green gate validated, not whatever the index happened to serve that day.
 
 The image is **built locally on demand and never pushed or pulled**. An image containing the
 repository *is* the repository, so a registry round-trip would break SPEC §5.1 outright.
 
-Four shapes of the design are worth naming before the measurements below, because each looks
+Five shapes of the design are worth naming before the measurements below, because each looks
 arbitrary otherwise:
+
+* **The build context is a standalone checkout carrying real git history, and the trial
+  workspace is not** (ADR-0062). A repository that versions itself from git - setuptools-scm,
+  hatch-vcs, pdm-backend, versioneer - cannot be built from a tree with no history in it, and a
+  linked worktree has none: its ``.git`` is a pointer file at a clone the build cannot reach.
+  So ``.git`` is copied into the image, and :func:`_checked_context` refuses a worktree outright
+  rather than excluding it. The split is what keeps that safe. A standalone clone carries every
+  ref, the fix commit's among them, and the *trial* workspace is bind-mounted into the tool's
+  own container - so a workspace with real history would be a machine-readable answer key.
+  Nothing is injected into the build to make this work: the repository's own tags supply the
+  version its own backend derives. **The environment carries a pinned ``git`` for the same
+  reason** (ADR-0064): history with no reader in front of it is inert, and the base image ships
+  none. The layer sits above ``COPY``, where nothing about it varies with the commit, so the
+  daemon holds one copy of it for every task image rather than one each.
 
 * **Dependency *resolution* is pinned to the base commit's era, not only its install**
   (ADR-0021). ``uv --exclude-newer`` is handed the commit's committer date, so a 2020 commit
   resolves against the index as it stood in 2020 rather than against today's. Without it the
   tree is the commit's and the environment around it is dated today, which is the measured
   cause of M2's zero-yield httpie re-mine. ``exclude_newer=None`` keeps the old behaviour -
-  today's index - and renders the recipe every tag built before ADR-0021 was addressed by.
+  today's index - which is what every in-repo caller still passes.
 * **The virtual environment lives at ``/opt/venv``, not at ``/workspace/.venv``.** At run time
   ``/workspace`` is replaced by a bind mount of the trial's own checkout, so anything the build
   left inside ``/workspace`` is simply gone. The project is nonetheless installed *editable*
@@ -82,13 +96,20 @@ on the ID. ``minimal_env()`` on its own is enough to run ``docker build``: no ``
 
 import re
 import tempfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from time import monotonic
 from typing import Final
 
-from assay.core import HASH_PREFIX, content_hash
-from assay.host import CheckoutState, GitError, checkout_state, minimal_env, run_command
+from assay.core import HASH_PREFIX, JsonValue, content_hash
+from assay.host import (
+    CheckoutState,
+    GitError,
+    checkout_description,
+    checkout_state,
+    minimal_env,
+    run_command,
+)
 from assay.sandbox.errors import SandboxError
 
 # Where the repository under evaluation lives inside the image, and the interpreter its tests are
@@ -110,6 +131,20 @@ _BASE_IMAGE: Final = (
     "@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58"
 )
 
+# The git the measurement image installs, pinned to a version rather than named (ADR-0064). The
+# base image ships none, so the history ADR-0062 puts in the context has no reader in front of
+# it and a setuptools-scm project aborts with `LookupError` inside the build. Pinned for the
+# same reason :data:`_BASE_IMAGE` is: a bare `apt-get install git` would let the contents of a
+# measurement image change while `base_image`, `dockerfile` and `base_commit` all held still,
+# which is one address naming two environments. The two pins are not equally tight, and ADR-0064
+# records the gap rather than implying it away: a digest closes :data:`_BASE_IMAGE` completely,
+# while a version pin leaves this package's own dependency closure (`git-man`, `less`, `perl`,
+# `libcurl3-gnutls`) free to move, so byte-reproducibility of the layer over time is not claimed
+# - only that the git a build installs is the git this line names. When the archive drops this
+# version the build fails loudly (`E: Version ... was not found`), which is the posture this
+# module takes everywhere else - a refusal where the value arrives beats a silent substitution.
+_GIT_PACKAGE: Final = "git=1:2.39.5-0+deb12u3"
+
 # A cutoff on its way into the ``RUN`` line, which is a shell line. Exactly one spelling gets
 # through - UTC, second precision, literal ``Z`` - because this is the boundary where the value
 # enters a *content address* (ADR-0022). Two spellings of one instant, or a bare ``YYYY-MM-DD``
@@ -119,13 +154,21 @@ _BASE_IMAGE: Final = (
 # ``host/git.py``'s ``_checked_revision`` applies to an object name.
 _CUTOFF_PATTERN: Final = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
-# Excluded from the context. ``.git`` in a worktree is a *file* pointing back at the clone, and
-# ``.venv`` is what an M1 host provisioning run leaves behind; neither is part of the commit, and
-# both would make the image content depend on the host's scratch state while the tag - computed
-# from the commit - did not move. Top level only, because that is what a dockerignore pattern
-# without ``**/`` means: a ``widget/__pycache__`` *does* reach the image and is therefore not
-# something :func:`_context_divergence` may wave through.
-_CONTEXT_EXCLUSIONS: Final[tuple[str, ...]] = (".git", ".venv", "__pycache__")
+# Excluded from the context. ``.venv`` is what an M1 host provisioning run leaves behind and
+# ``__pycache__`` is what an interpreter leaves behind; neither is part of the commit, and both
+# would make the image content depend on the host's scratch state while the tag - computed from
+# the commit - did not move. Top level only, because that is what a dockerignore pattern without
+# ``**/`` means: a ``widget/__pycache__`` *does* reach the image and is therefore not something
+# :func:`_context_divergence` may wave through.
+#
+# ``.git`` was a third member until ADR-0062 and is deliberately no longer one: a repository that
+# versions itself with setuptools-scm, hatch-vcs, pdm-backend or versioneer derives its version
+# from git at build time, and dropping the history made every such repository unbuildable - a
+# defect of Assay's checkout rather than a reach limit of the commit. What made dropping it look
+# free was that the context used to be a linked worktree, whose ``.git`` is a pointer file and
+# therefore worth nothing to a build anyway. It is a standalone checkout now, and a worktree is
+# refused outright by :func:`_checked_context` rather than quietly excluded.
+_CONTEXT_EXCLUSIONS: Final[tuple[str, ...]] = (".venv", "__pycache__")
 
 # The same list as a dockerignore, derived rather than spelled a second time (ADR-0027). What a
 # build copies and what the precondition forgives have to be one list: two lists drift, and the
@@ -133,10 +176,17 @@ _CONTEXT_EXCLUSIONS: Final[tuple[str, ...]] = (".git", ".venv", "__pycache__")
 # refusal of a context that was fine. Written beside the Dockerfile rather than inside the
 # context, which BuildKit honours as ``<dockerfile>.dockerignore``; measured, not assumed. The
 # trailing slashes the literal used to carry are dropped rather than rendered, and the meaning is
-# unchanged: **measured 2026-09-01** with exactly this file over a context holding a ``.git``
-# *file*, a ``.venv/``, a ``__pycache__/`` and a ``widget/__pycache__/``, the image held
+# unchanged: **measured 2026-09-01** with a ``.git`` line still in it, over a context holding a
+# ``.git`` *file*, a ``.venv/``, a ``__pycache__/`` and a ``widget/__pycache__/``, the image held
 # ``keep.txt`` and ``widget/__pycache__/b.pyc`` and nothing else - so a bare name excludes a
-# directory and a file alike, and a pattern without ``**/`` reaches the top level only.
+# directory and a file alike, and a pattern without ``**/`` reaches the top level only. The
+# ``.git`` line is gone as of ADR-0062; what that measurement established about the other two
+# names is untouched, since a dockerignore pattern says nothing about the patterns beside it.
+#
+# It is an input to the image's content address (ADR-0063), passed through :func:`image_tag`'s
+# ``context``: it decides what ends up inside the image and moving it moves nothing else, so an
+# unhashed version of this constant would let one address name two environments - the same
+# reason :data:`_BASE_IMAGE` is hashed as ``base_image`` rather than trusted to be itself.
 _DOCKERIGNORE: Final = "".join(f"{name}\n" for name in _CONTEXT_EXCLUSIONS)
 
 # Where the path starts in a ``git status --porcelain`` entry: two status characters and a
@@ -146,6 +196,12 @@ _DOCKERIGNORE: Final = "".join(f"{name}\n" for name in _CONTEXT_EXCLUSIONS)
 _PORCELAIN_PATH_START: Final = 3
 
 _DOCKERFILE_NAME: Final = "Dockerfile"
+
+# What a repository keeps its history in, and - since ADR-0062 - the difference between a build
+# context this module will build from and one it refuses. A directory is a repository a build
+# backend can read a version out of; a *file* by that name is a linked worktree's pointer back
+# at a clone the build cannot see.
+_GIT_DIR: Final = ".git"
 
 # The agentic tool M3 measures, and where npm's global prefix puts its entry point on Debian.
 # Both are named here rather than in the adapter, which never learns what it is driving
@@ -214,8 +270,12 @@ def render_base_dockerfile(*, exclude_newer: str | None) -> str:
             date (:meth:`assay.host.GitHistory.committed_at`) in production, and in the one
             canonical RFC3339 spelling that method produces: ``YYYY-MM-DDTHH:MM:SSZ``, nothing
             else. ``None`` means **today's index**, which is the M1 behaviour and the
-            behaviour every in-repo caller still wants; the rendering is then byte-identical to
-            the recipe every existing tag was computed from, so nothing already built churns.
+            behaviour every in-repo caller still wants - a sentinel date instead would make
+            "today" a fixed instant that a rebuild months later would still resolve against.
+            It no longer means "the recipe every existing tag was computed from": ADR-0064's
+            git layer re-addressed every task image once, deliberately and for all values of
+            this argument, so the first run after it pays for a cold rebuild of images the
+            daemon already held under their old addresses.
 
     Returns:
         The complete Dockerfile text.
@@ -229,9 +289,20 @@ def render_base_dockerfile(*, exclude_newer: str | None) -> str:
     # line: an unconditional `--exclude-newer` with some sentinel value would make "today"
     # a date, and a rebuild months later would then no longer mean today.
     cutoff = "" if exclude_newer is None else f" --exclude-newer {_checked_cutoff(exclude_newer)}"
+    # Above `COPY`, which is where every commit-varying input starts: the layer's parent chain
+    # and its command are then identical for every task image, so BuildKit stores one copy and
+    # shares it. Below `COPY` the same layer would be commit-dependent by construction and cost
+    # its full size once per image instead of once per suite. The size itself is not recorded
+    # here because it has not been measured on this host - the argument is about the count, and
+    # it holds at any size. The apt lists go in the same layer they were fetched in,
+    # for the reason :data:`_CONTEXT_EXCLUSIONS` gives about the host's scratch state: they are
+    # a dated snapshot of the archive and no part of the environment being measured.
     return f"""\
 FROM {_BASE_IMAGE}
 ENV UV_LINK_MODE=copy
+RUN apt-get update \\
+ && apt-get install -y --no-install-recommends {_GIT_PACKAGE} \\
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR {WORKSPACE_DIR}
 COPY . {WORKSPACE_DIR}
 RUN uv venv /opt/venv \\
@@ -362,7 +433,13 @@ def build_agent_image(
     return tag
 
 
-def image_tag(*, base_image: str, dockerfile: str, base_commit: str) -> str:
+def image_tag(
+    *,
+    base_image: str,
+    dockerfile: str,
+    base_commit: str,
+    context: Mapping[str, str] | None = None,
+) -> str:
     """Address a task image by everything that decides what ends up inside it.
 
     Keyed on the recipe as well as on the commit. A tag keyed on ``base_commit`` alone would go
@@ -376,15 +453,29 @@ def image_tag(*, base_image: str, dockerfile: str, base_commit: str) -> str:
         base_commit: The commit the image is built from. That the context handed to the build
             *is* that commit is not something this function can see - it is checked before any
             build starts, by :func:`_checked_context` (ADR-0027).
+        context: What a build reads out of its context beyond the commit itself, or ``None``
+            where a build sends no context at all (ADR-0063). :func:`build_task_image` passes
+            ``dockerignore`` - which decides what of the checkout is copied - and
+            ``git_description``, the history the copied ``.git`` makes visible, because a build
+            backend that versions the project from git derives a different version from a clone
+            carrying a different tag set. **One optional key rather than two required
+            arguments**, spelled the way ``exclude_newer=None`` is: the agent phase and the
+            extras phase both build from an empty directory, and a placeholder standing in for
+            a context they do not have would be exactly the untruth this address exists to
+            prevent. ``None`` therefore hashes to what those two phases already hashed to.
 
     Returns:
         ``assay-task:<64 lowercase hex>`` - the digest half of
         :func:`assay.core.content_hash`, because a docker tag may not contain a colon.
     """
-    address = content_hash(
-        {"base_image": base_image, "dockerfile": dockerfile, "base_commit": base_commit}
-    )
-    return f"{_REPOSITORY}:{address.removeprefix(HASH_PREFIX)}"
+    body: dict[str, JsonValue] = {
+        "base_image": base_image,
+        "dockerfile": dockerfile,
+        "base_commit": base_commit,
+    }
+    if context is not None:
+        body["context"] = dict(context)
+    return f"{_REPOSITORY}:{content_hash(body).removeprefix(HASH_PREFIX)}"
 
 
 def read_declared_extras(image_tag: str, *, timeout_s: int) -> tuple[str, ...]:
@@ -522,11 +613,14 @@ def build_task_image(
     anything again.
 
     Args:
-        context: A checkout of ``base_commit`` - a :meth:`assay.host.GitHistory.worktree` in
-            practice - and **proved to be one before anything is built** (ADR-0027), because the
-            tag says so and nothing downstream can check. **Read only.** Nothing is written into
-            it, because the trial that follows is scored by diffing this tree and a file Assay
-            left behind would score as the tool's work.
+        context: A checkout of ``base_commit`` - a
+            :meth:`assay.host.GitHistory.standalone_checkout` in practice - and **proved to be
+            one before anything is built** (ADR-0027), because the tag says so and nothing
+            downstream can check. It must be a repository rather than a linked worktree
+            (ADR-0062): its ``.git`` is copied into the image now, so a build backend that
+            versions the project from git finds a history where it looks. **Read only.**
+            Nothing is written into it, because the trial that follows is scored by diffing a
+            tree like this one and a file Assay left behind would score as the tool's work.
         base_commit: The commit ``context`` holds, which goes into both tags.
         exclude_newer: The canonical UTC instant to resolve this commit's dependencies as of
             (``YYYY-MM-DDTHH:MM:SSZ``), or ``None``
@@ -553,11 +647,22 @@ def build_task_image(
             tail of the command's stderr, which is the only thing a caller could usefully print,
             and nothing in M2 branches on which phase failed.
         CommandTimeoutError: if the budget expired.
+        GitError: if git stopped answering about the context while it was being described. Raised
+            by :func:`_checked_context` and left unwrapped there for the reason its own ``Raises:``
+            gives.
     """
     deadline = monotonic() + timeout_s
-    _checked_context(context, base_commit, timeout_s=_remaining(deadline))
+    description = _checked_context(context, base_commit, timeout_s=_remaining(deadline))
     base = render_base_dockerfile(exclude_newer=exclude_newer)
-    tag = image_tag(base_image=_BASE_IMAGE, dockerfile=base, base_commit=base_commit)
+    tag = image_tag(
+        base_image=_BASE_IMAGE,
+        dockerfile=base,
+        base_commit=base_commit,
+        # What the build reads out of the context beyond the tree itself, and neither half is
+        # visible in the recipe: the dockerignore decides what is copied, and the description
+        # is the history the copied `.git` makes visible to a build backend (ADR-0063).
+        context={"dockerignore": _DOCKERIGNORE, "git_description": description},
+    )
     _docker_build(dockerfile=base, tag=tag, context=context, timeout_s=_remaining(deadline))
 
     extras = _select_extras(read_declared_extras(tag, timeout_s=_remaining(deadline)))
@@ -578,8 +683,8 @@ def build_task_image(
     return widened
 
 
-def _checked_context(context: Path, base_commit: str, *, timeout_s: int) -> None:
-    """Refuse a context the address would then misdescribe (ADR-0027).
+def _checked_context(context: Path, base_commit: str, *, timeout_s: int) -> str:
+    """Refuse a context the address would then misdescribe (ADR-0027), and describe it.
 
     The one question this package asks git, and it asks it through the host seam rather than by
     running git itself. It is here because :func:`image_tag` puts ``base_commit`` into a tag and
@@ -590,14 +695,41 @@ def _checked_context(context: Path, base_commit: str, *, timeout_s: int) -> None
     Refusal rather than repair, the posture :func:`_checked_cutoff` takes towards a value on its
     way into an address. There is nothing to repair towards - Assay does not own this tree, and
     a harness that reset somebody's checkout to make an address true would be corrupting the
-    measurement rather than taking it.
+    measurement rather than taking it. A **linked worktree** is refused on the same terms and it
+    is a clause here rather than a step of its own: its ``.git`` is a pointer file holding an
+    absolute host path, and since ADR-0062 that file is copied into the image instead of
+    excluded from it - so the image would carry where this machine kept the clone (ADR-0052)
+    while a build backend reading git for a version got an obscure abort out of a path it cannot
+    follow. Refuse, never repair: turning a worktree into a clone here would make this function
+    the thing that decides what is built.
+
+    Returns:
+        What history the context makes visible, as :func:`assay.host.checkout_description`
+        spells it - derived here because this is the one place :mod:`assay.sandbox` asks git
+        about its context, and it is a build input from ADR-0062 onwards, so ADR-0063 puts it in
+        the address.
 
     Raises:
-        SandboxError: if ``context`` is not a clean checkout of ``base_commit``, or if git could
-            not answer at all - a directory that is not a checkout included, with the
-            :class:`assay.host.GitError` chained. A tree git has never heard of has no head for
-            the tag to name, so it is the same refusal rather than a different one.
+        SandboxError: if ``context`` is not a clean checkout of ``base_commit``, if it is a
+            linked worktree rather than a repository, or if git could not answer at all - a
+            directory that is not a checkout included, with the :class:`assay.host.GitError`
+            chained. A tree git has never heard of has no head for the tag to name, so it is the
+            same refusal rather than a different one.
+        GitError: if git stopped answering about a tree it had already described - the final
+            :func:`assay.host.checkout_description` call only runs once ``checkout_state`` has
+            succeeded on the same path, so a failure there is a race or a timeout rather than a
+            statement about the context. Deliberately not wrapped, per ADR-0048: a
+            :class:`SandboxError` here would name a cause this call cannot know.
     """
+    pointer = context / _GIT_DIR
+    if pointer.is_file():
+        raise SandboxError(
+            f"{str(context)!r} is a linked worktree: its {_GIT_DIR!r} is a pointer file rather "
+            "than a repository, so an image built from it would carry this machine's path in "
+            "place of the history the commit's own build backend versions itself from - build "
+            "from a standalone checkout instead"
+        )
+
     try:
         state = checkout_state(context, timeout_s=timeout_s)
     except GitError as unanswerable:
@@ -611,6 +743,8 @@ def _checked_context(context: Path, base_commit: str, *, timeout_s: int) -> None
             f"{str(context)!r} is not a clean checkout of {base_commit}, so an image tagged "
             f"for that commit would not hold it: {divergence!r}"
         )
+
+    return checkout_description(context, timeout_s=timeout_s)
 
 
 def _context_divergence(state: CheckoutState, base_commit: str) -> tuple[str, ...]:

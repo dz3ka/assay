@@ -13,7 +13,8 @@ From M3 the package holds a second audited seam, on the same terms: :mod:`assay.
 is the only module in ``src/assay`` that may open a socket, and ``tests/host/test_network_egress``
 asserts that no other module - inside this package or out of it - imports ``socket``, ``ssl``,
 ``urllib`` or an HTTP client (ADR-0036). The exemption is that one module path rather than this
-directory, because ``git.py``'s standing claim is that it never clones and never fetches.
+directory, because ``git.py`` never fetches, and the one ``clone`` it runs is ``--local``
+from a path that already existed (ADR-0062).
 
 Nothing here is pure, with one deliberate exception: :mod:`assay.host.junit` starts nothing
 and opens nothing, and lives here rather than above the seam because what it reads is a
@@ -24,8 +25,14 @@ Everything *above* the seam - the miner, the validator, the scorer - is pure, an
 instance of the ``History`` protocol :class:`GitHistory` satisfies (CLAUDE.md).
 """
 
-from assay.host.git import CheckoutState, GitError, GitHistory, checkout_state
-from assay.host.model_api import HttpModelTransport
+from assay.host.git import (
+    CheckoutState,
+    GitError,
+    GitHistory,
+    checkout_description,
+    checkout_state,
+)
+from assay.host.model_api import HttpModelTransport, LocalModelTransport
 from assay.host.process import (
     CommandFailedError,
     CommandResult,
@@ -45,8 +52,10 @@ __all__ = [
     "GitError",
     "GitHistory",
     "HttpModelTransport",
+    "LocalModelTransport",
     "PytestHostRunner",
     "SelectorError",
+    "checkout_description",
     "checkout_state",
     "minimal_env",
     "provision_venv",

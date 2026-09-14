@@ -30,10 +30,18 @@ from collections.abc import Sequence
 from decimal import Decimal
 from pathlib import Path
 from time import monotonic_ns
+from typing import Final
 
 from assay.adapters.model import ModelTransport, ModelTransportError
 from assay.results import Attempt, Budget
 from assay.suite import Task
+
+# The two names this one adapter answers to. A report separates tools by name, and a model on
+# this machine is a different tool from a metered endpoint even though the same code asks both
+# the same question - so the second name exists and a second class does not. Both are written
+# into result sets on disk and read back by name, so neither is renameable in silence.
+NAIVE_NAME: Final = "naive"
+LOCAL_NAME: Final = "naive-local"
 
 _NS_PER_MS = 1_000_000
 
@@ -93,15 +101,24 @@ _MIN_FENCE_RUN = 3
 class NaiveBaselineAdapter:
     """One model call per trial: the task's prompt, the failing tests, and whatever comes back."""
 
-    name: str = "naive"
+    name: str = NAIVE_NAME
     # The model *is* this tool. A report that could not say which one answered could not say
     # which tool it measured, and nothing else in an attempt records the model - so it is
     # written into the version, beside the version of the harness code that framed the call.
     version: str
 
-    def __init__(self, *, transport: ModelTransport, model: str) -> None:
+    def __init__(self, *, transport: ModelTransport, model: str, name: str = NAIVE_NAME) -> None:
+        """``name`` is the row this adapter's attempts are reported under.
+
+        The same code answers under two names (``NAIVE_NAME``, ``LOCAL_NAME``) because one raw
+        call to a model on this machine and one to a metered endpoint are the same measurement
+        of two different tools: what differs is the transport and the model, both already
+        injected here. A subclass would only be duplicating a name, and a report that showed
+        the two runs on one row could not say which tool the number belonged to.
+        """
         self._transport = transport
         self._model = model
+        self.name = name
         self.version = f"{_HARNESS_VERSION}+{model}"
 
     def run(self, task: Task, workspace: Path, budget: Budget, *, trial_index: int) -> Attempt:

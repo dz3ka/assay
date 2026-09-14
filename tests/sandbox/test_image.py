@@ -25,9 +25,19 @@ from pathlib import Path
 import pytest
 
 from assay.core import AssayError
-from assay.host import CheckoutState, CommandFailedError, GitError
+from assay.host import (
+    CheckoutState,
+    CommandFailedError,
+    GitError,
+    GitHistory,
+    checkout_description,
+    minimal_env,
+    run_command,
+)
 from assay.sandbox import (
     TEST_EXTRA_NAMES,
+    VENV_PYTHON,
+    WORKSPACE_DIR,
     SandboxError,
     build_task_image,
     image_tag,
@@ -37,9 +47,10 @@ from assay.sandbox import (
     render_extras_dockerfile,
 )
 from assay.sandbox.image import _context_divergence, _select_extras
+from tests.fixture_repo import FIXTURE_COMMITS, build_fixture_repo
 from tests.sandbox.support import (
     BUILD_BUDGET_S,
-    fixture_worktree,
+    fixture_checkout,
     image_created_at,
     imports_cleanly,
     installed_version,
@@ -50,15 +61,23 @@ _OTHER_RECIPE = "FROM scratch\nENV CHANGED=1\n"
 _COMMIT = "0123456789abcdef0123456789abcdef01234567"
 _OTHER_COMMIT = "89abcdef0123456789abcdef0123456789abcdef"
 
-# The recipe every image built before ADR-0021 was addressed by, spelled out here rather than
-# imported: an oracle that reads its answer out of the module under test cannot notice the
-# module drifting. `exclude_newer=None` has to keep rendering exactly this, or every tag in the
-# daemon's cache changes meaning and the suite pays for a cold rebuild of images that are
-# byte-for-byte the ones it already holds.
+# The recipe `exclude_newer=None` renders as of ADR-0064, spelled out here rather than imported:
+# an oracle that reads its answer out of the module under test cannot notice the module drifting.
+# It is not the recipe the tags in the daemon's cache were built from - the git layer re-addressed
+# every task image once, deliberately, which is what 0064 decides - so what this literal holds
+# still is that no *further* change slips in unnoticed.
+#
+# The git layer sits before `COPY` on purpose (ADR-0064): everything after `COPY` varies with the
+# commit, so a layer placed below it would be built and stored once per task image instead of
+# once for all of them. The pin and the `rm -rf` are load-bearing too, for reasons the recipe
+# cannot state and 0064 does.
 _RECIPE_WITHOUT_A_CUTOFF = (
     "FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
     "@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58\n"
     "ENV UV_LINK_MODE=copy\n"
+    "RUN apt-get update \\\n"
+    " && apt-get install -y --no-install-recommends git=1:2.39.5-0+deb12u3 \\\n"
+    " && rm -rf /var/lib/apt/lists/*\n"
     "WORKDIR /workspace\n"
     "COPY . /workspace\n"
     "RUN uv venv /opt/venv \\\n"
@@ -84,6 +103,54 @@ _PINNED_BASE_IMAGE = (
     "ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
     "@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58"
 )
+
+# The dockerignore the build writes beside its Dockerfile, spelled a second time here for the
+# reason `_RECIPE_WITHOUT_A_CUTOFF` is: it is an input to every task image's address (ADR-0063),
+# and an oracle that reads its answer out of the module under test cannot notice the module
+# drifting. `.git` is deliberately not in it - ADR-0062 put the history back in the context.
+_DOCKERIGNORE_TEXT = ".venv\n__pycache__\n"
+
+# The address every tag built before ADR-0063 was computed at, for a context that sends nothing.
+# Written as the literal it has to keep producing rather than recomputed: the whole claim about
+# the optional `context` key is that an empty context leaves those two call sites - the agent
+# phase and the extras phase - byte-identical, and a claim recomputed from the module under test
+# would go on holding after the module stopped.
+_ADDRESS_WITH_NO_CONTEXT = (
+    "assay-task:7879e448c02c28a7650bf77a1a06c80ca5757322e5194d6bc585e43641415e76"
+)
+
+# Asked of a built image with nothing mounted over it: whether the checkout's `.git` arrived as
+# a repository, and which tags came with it. Refs are read off the filesystem rather than through
+# the git the image now carries (ADR-0064), because a probe that asked git would be answered by
+# the same binary the build backend uses - and the point of this question is that the *history*
+# arrived, independently of anything able to read it. A clone packs its refs, so both spellings
+# are looked for.
+_IMAGE_HISTORY_PROBE = f"""from pathlib import Path
+
+history = Path("{WORKSPACE_DIR}") / ".git"
+print("dir" if history.is_dir() else "file" if history.is_file() else "absent")
+names = [path.name for path in (history / "refs" / "tags").glob("*")]
+packed = history / "packed-refs"
+if packed.is_file():
+    names += [
+        line.split("refs/tags/")[1].strip()
+        for line in packed.read_text(encoding="utf-8").splitlines()
+        if "refs/tags/" in line
+    ]
+print(" ".join(sorted(names)))
+"""
+
+# Asked of the mounted workspace from inside a running trial's image, because that is the only
+# place the question has meaning: the image's own `/workspace` is shadowed by the mount, so what
+# `ls` on the host would show is not what a tool under test can see. Prints two words - what
+# `/workspace/.git` *is*, and the first token of it if it is a file.
+_MOUNTED_HISTORY_PROBE = f"""from pathlib import Path
+
+pointer = Path("{WORKSPACE_DIR}") / ".git"
+print("dir" if pointer.is_dir() else "file" if pointer.is_file() else "absent")
+if pointer.is_file():
+    print(pointer.read_text(encoding="utf-8").split()[0])
+"""
 
 # A tag the renderer is handed rather than one it computes: these tests are about the text of the
 # second phase, and a real address would only make the expected string harder to read.
@@ -125,6 +192,27 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["widget"]
+"""
+
+# A project that has no version of its own: setuptools-scm derives one from the history in the
+# context, which is the whole class of repository ADR-0062 put `.git` back for and ADR-0064 made
+# readable. Deliberately *not* folded into `_DECLARES_EXTRAS_PYPROJECT`: that project's static
+# `0.1.0` is what the extras tests are addressed against, and a version that moved with a tag
+# would make those tags depend on this one's history.
+_VERSIONED_FROM_GIT_PYPROJECT = """\
+[project]
+name = "gadget"
+requires-python = ">=3.12"
+dynamic = ["version"]
+
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["gadget*"]
+
+[tool.setuptools_scm]
 """
 
 _EXTRAS_RECIPE = (
@@ -202,6 +290,44 @@ def _write_project_declaring_extras(root: Path) -> tuple[Path, str]:
     return project, _git(project, "rev-parse", "HEAD").strip()
 
 
+def _write_project_versioned_from_git(root: Path) -> tuple[Path, str]:
+    """A one-commit repository whose project declares no version, tagged ``v2.0.0``.
+
+    The shape thirteen `tenacity` task images failed on, reduced to something a test can build
+    in seconds: a setuptools-scm project has no version anywhere in its tree, so the only way an
+    image can report ``2.0.0`` is that the history reached it *and* something inside could read
+    it. Pinned the same way :func:`_write_project_declaring_extras` is, and for the same reason -
+    the object name is part of a content address.
+
+    The tag is made here rather than by the caller so that the commit handed back is already the
+    one the tag points at; a tag applied afterwards would describe as ``v2.0.0-1-g...`` and the
+    version would stop being the flat string the assertion can name.
+    """
+    project = root / "versioned-from-git"
+    (project / "gadget").mkdir(parents=True)
+    (project / "pyproject.toml").write_text(
+        _VERSIONED_FROM_GIT_PYPROJECT, encoding="utf-8", newline="\n"
+    )
+    (project / "gadget" / "__init__.py").write_text(
+        '"""A project that keeps its version in git."""\n', encoding="utf-8", newline="\n"
+    )
+    _git(project, "init", "--quiet", "--initial-branch=main")
+    _git(project, "add", "--all")
+    _git(project, "commit", "--quiet", "-m", "the project that versions itself from git")
+    _git(project, "tag", "v2.0.0")
+    return project, _git(project, "rev-parse", "HEAD").strip()
+
+
+def _fixture_context(commit: str) -> dict[str, str]:
+    """What the fixture repository's build context contributes to an image's address.
+
+    The fixture history carries no tag, so `git describe --tags --long --always --abbrev=40`
+    falls back to the object name - the one case where the description can be spelled without
+    asking git, which is what keeps this an oracle rather than a restatement.
+    """
+    return {"dockerignore": _DOCKERIGNORE_TEXT, "git_description": commit}
+
+
 def _git(repo: Path, *arguments: str) -> str:
     """Drive git directly, so a fixture is not built by the seam these tests build over.
 
@@ -236,6 +362,88 @@ def test_the_tag_is_a_content_address_over_the_recipe_as_well_as_the_commit() ->
     assert other_commit != address, "a different commit must not keep the old address"
 
 
+def test_what_the_context_excludes_and_what_history_it_carries_are_both_in_the_tag() -> None:
+    """Two build inputs the recipe cannot show, and one address that has to cover both.
+
+    The dockerignore decides which of the checkout is copied and the description is the history
+    the copied `.git` makes visible, so a change to either changes what is inside the image
+    while `base_image`, `dockerfile` and `base_commit` all stay put (ADR-0063).
+    """
+    address = image_tag(
+        base_image="python:3.12",
+        dockerfile=_RECIPE,
+        base_commit=_COMMIT,
+        context={"dockerignore": _DOCKERIGNORE_TEXT, "git_description": f"v1.0.0-0-g{_COMMIT}"},
+    )
+    other_exclusions = image_tag(
+        base_image="python:3.12",
+        dockerfile=_RECIPE,
+        base_commit=_COMMIT,
+        context={"dockerignore": ".venv\n", "git_description": f"v1.0.0-0-g{_COMMIT}"},
+    )
+    # The same commit in a clone that cannot see the tag: the version a setuptools-scm build
+    # derives is a different string, so the image is a different environment.
+    no_tag_in_sight = image_tag(
+        base_image="python:3.12",
+        dockerfile=_RECIPE,
+        base_commit=_COMMIT,
+        context={"dockerignore": _DOCKERIGNORE_TEXT, "git_description": _COMMIT},
+    )
+
+    assert other_exclusions != address, "what the build copies must not keep the old address"
+    assert no_tag_in_sight != address, "a clone with a different tag set is a different build"
+
+
+def test_a_build_that_sends_no_context_addresses_itself_exactly_as_it_always_has() -> None:
+    # The agent phase and the extras phase both build from an empty directory, so they have no
+    # dockerignore and no history to name. `context=None` is what keeps their addresses where
+    # they were - a placeholder standing in for a context that does not exist would be the
+    # untruth this address is here to prevent.
+    assert (
+        image_tag(base_image="python:3.12", dockerfile=_RECIPE, base_commit=_COMMIT)
+        == _ADDRESS_WITH_NO_CONTEXT
+    )
+    assert (
+        image_tag(base_image="python:3.12", dockerfile=_RECIPE, base_commit=_COMMIT, context=None)
+        == _ADDRESS_WITH_NO_CONTEXT
+    )
+
+
+def test_two_clones_of_one_commit_with_different_tags_do_not_share_an_address(
+    tmp_path: Path,
+) -> None:
+    """The assumption `--local` is not asked to carry on its own.
+
+    Real git, not two strings: the claim is that a clone's *visible history* differs and that the
+    difference reaches the address. A repository that versions itself from git derives a version
+    from what `git describe` answers here, so two clones answering differently are two
+    environments and must not be one tag.
+    """
+    project, commit = _write_project_declaring_extras(tmp_path)
+    untagged = image_tag(
+        base_image=_PINNED_BASE_IMAGE,
+        dockerfile=_RECIPE,
+        base_commit=commit,
+        context={
+            "dockerignore": _DOCKERIGNORE_TEXT,
+            "git_description": checkout_description(project),
+        },
+    )
+    _git(project, "tag", "v2.0.0")
+
+    tagged = image_tag(
+        base_image=_PINNED_BASE_IMAGE,
+        dockerfile=_RECIPE,
+        base_commit=commit,
+        context={
+            "dockerignore": _DOCKERIGNORE_TEXT,
+            "git_description": checkout_description(project),
+        },
+    )
+
+    assert tagged != untagged
+
+
 def test_the_tag_is_something_docker_will_accept_as_a_tag() -> None:
     repository, _, reference = image_tag(
         base_image="python:3.12", dockerfile=_RECIPE, base_commit=_COMMIT
@@ -249,7 +457,7 @@ def test_the_tag_is_something_docker_will_accept_as_a_tag() -> None:
 
 
 def test_building_the_same_worktree_twice_costs_one_build_and_one_tag(tmp_path: Path) -> None:
-    with fixture_worktree(tmp_path) as (checkout, commit):
+    with fixture_checkout(tmp_path) as (checkout, commit):
         first = build_task_image(
             context=checkout, base_commit=commit, exclude_newer=None, timeout_s=BUILD_BUDGET_S
         )
@@ -266,7 +474,7 @@ def test_building_the_same_worktree_twice_costs_one_build_and_one_tag(tmp_path: 
 
 
 def test_the_build_leaves_no_trace_in_the_worktree_it_is_about_to_score(tmp_path: Path) -> None:
-    with fixture_worktree(tmp_path) as (checkout, commit):
+    with fixture_checkout(tmp_path) as (checkout, commit):
         before = sorted(path.relative_to(checkout).as_posix() for path in checkout.rglob("*"))
 
         build_task_image(
@@ -281,7 +489,10 @@ def test_the_build_leaves_no_trace_in_the_worktree_it_is_about_to_score(tmp_path
         )
 
 
-def test_no_cutoff_renders_the_recipe_every_existing_tag_was_addressed_by() -> None:
+def test_no_cutoff_renders_todays_index_over_a_pinned_git() -> None:
+    # Two claims in one literal: `None` still means today's index rather than some sentinel
+    # date, and the git layer ADR-0064 adds is spelled exactly - a pinned version, its apt lists
+    # dropped in the same layer, and the whole thing above `COPY` where it stays commit-invariant.
     assert render_base_dockerfile(exclude_newer=None) == _RECIPE_WITHOUT_A_CUTOFF
 
 
@@ -344,7 +555,7 @@ def test_a_cutoff_resolves_the_commits_era_rather_than_todays_index(tmp_path: Pa
     gets whatever the index serves today; built with one it gets what the commit could have had.
     A resolution that ignored the cutoff would show up here as two identical versions.
     """
-    with fixture_worktree(tmp_path) as (checkout, commit):
+    with fixture_checkout(tmp_path) as (checkout, commit):
         era = build_task_image(
             context=checkout,
             base_commit=commit,
@@ -500,7 +711,7 @@ def test_a_project_declaring_no_test_extra_keeps_the_tag_the_first_phase_built(
     # address is the one every image in the daemon's cache already carries. A second phase that
     # ran anyway would re-tag every task in the suite and charge the next run for a cold build
     # of images it already holds.
-    with fixture_worktree(tmp_path) as (checkout, commit):
+    with fixture_checkout(tmp_path) as (checkout, commit):
         assert _RECIPE_WITHOUT_A_CUTOFF.startswith(f"FROM {_PINNED_BASE_IMAGE}\n")
 
         built = build_task_image(
@@ -512,6 +723,7 @@ def test_a_project_declaring_no_test_extra_keeps_the_tag_the_first_phase_built(
             base_image=_PINNED_BASE_IMAGE,
             dockerfile=_RECIPE_WITHOUT_A_CUTOFF,
             base_commit=commit,
+            context=_fixture_context(commit),
         )
 
 
@@ -521,7 +733,7 @@ def test_the_installed_closure_is_the_images_own_account_of_what_arrived(tmp_pat
     The editable install is the load-bearing line: it is the one entry that proves the closure
     describes *this* project's environment rather than some venv uv happened to find.
     """
-    with fixture_worktree(tmp_path) as (checkout, commit):
+    with fixture_checkout(tmp_path) as (checkout, commit):
         built = build_task_image(
             context=checkout, base_commit=commit, exclude_newer=None, timeout_s=BUILD_BUDGET_S
         )
@@ -543,7 +755,7 @@ def test_two_eras_of_one_commit_do_not_share_one_closure(tmp_path: Path) -> None
     that claim is only checkable if the closure a run recorded is comparable with a rebuild's.
     Two eras of one commit is the cheapest case where the two must differ.
     """
-    with fixture_worktree(tmp_path) as (checkout, commit):
+    with fixture_checkout(tmp_path) as (checkout, commit):
         era = build_task_image(
             context=checkout,
             base_commit=commit,
@@ -583,7 +795,7 @@ def test_a_context_patched_after_the_checkout_is_refused_before_anything_is_buil
     what every later step reads - so the trial would be scored against an environment nobody
     chose, which is this project's own subject matter failing inside it.
     """
-    with fixture_worktree(tmp_path) as (checkout, commit):
+    with fixture_checkout(tmp_path) as (checkout, commit):
         (checkout / "widget" / "calc.py").write_text(
             "def total(values):\n    return 0\n", encoding="utf-8", newline="\n"
         )
@@ -609,7 +821,7 @@ def test_a_context_dirty_only_where_the_build_ignores_it_is_still_built(tmp_path
     the build context - so neither is a reason to refuse. If the two lists ever drift apart, the
     build starts refusing trees it should mine, which is a harness that measures nothing at all.
     """
-    with fixture_worktree(tmp_path) as (checkout, commit):
+    with fixture_checkout(tmp_path) as (checkout, commit):
         (checkout / ".venv").mkdir()
         (checkout / ".venv" / "pyvenv.cfg").write_text(
             "home = /nowhere\n", encoding="utf-8", newline="\n"
@@ -624,8 +836,138 @@ def test_a_context_dirty_only_where_the_build_ignores_it_is_still_built(tmp_path
     # The address the clean tree builds to, unchanged: scratch state the build never copies must
     # not decide whether an image exists, and must not decide what it is called either.
     assert built == image_tag(
-        base_image=_PINNED_BASE_IMAGE, dockerfile=_RECIPE_WITHOUT_A_CUTOFF, base_commit=commit
+        base_image=_PINNED_BASE_IMAGE,
+        dockerfile=_RECIPE_WITHOUT_A_CUTOFF,
+        base_commit=commit,
+        context=_fixture_context(commit),
     )
+
+
+def test_a_linked_worktree_is_refused_because_its_git_is_a_pointer_file(tmp_path: Path) -> None:
+    """The precondition ADR-0062 adds, and it refuses rather than repairs.
+
+    A worktree is a perfectly clean checkout of the commit, so nothing else here would stop it.
+    What is wrong with it is invisible to `checkout_state`: its `.git` is a file holding this
+    machine's path, the build copies that file now, and a build backend reading git for a
+    version gets an obscure abort out of a path it cannot follow. Turning it into a clone here
+    would make the precondition the thing that decides what is built.
+    """
+    root = build_fixture_repo(tmp_path / "repo")
+    commit = FIXTURE_COMMITS[0].sha
+    history = GitHistory(root, worktree_root=tmp_path / "worktrees")
+
+    with history.worktree(commit) as workspace, pytest.raises(SandboxError) as refusal:
+        build_task_image(
+            context=workspace,
+            base_commit=commit,
+            exclude_newer=None,
+            timeout_s=BUILD_BUDGET_S,
+        )
+
+    # The pointer file is named, because "use a standalone checkout" is not advice a caller can
+    # act on without knowing which of the two kinds it handed over.
+    assert ".git" in str(refusal.value)
+    # The directory's own name rather than its whole path: the refusal quotes the path with
+    # `!r`, which doubles every backslash on this host, and what has to be in the sentence is
+    # which tree was refused rather than how Python spells a Windows path.
+    assert workspace.name in str(refusal.value)
+
+
+def test_the_image_carries_the_repositorys_own_history_where_a_build_backend_looks(
+    tmp_path: Path,
+) -> None:
+    """The blocker, closed end to end: history reaches the image *and* something can read it.
+
+    Thirteen `tenacity` task images failed to build because `.git` was excluded from the build
+    context, so setuptools-scm - and hatch-vcs, pdm-backend, versioneer - found nothing to read
+    a version out of. ADR-0062 made the context a standalone checkout whose `.git` is copied;
+    ADR-0064 put a pinned `git` in the image, because history with no reader in front of it is
+    inert and the base image ships none (`git --version` -> `sh: 1: git: not found`, measured
+    2026-09-10 on this host, which is what left setuptools-scm aborting with `LookupError:
+    setuptools-scm was unable to detect version for /workspace`).
+
+    Both halves are asserted, and they are different questions. The probe answers the first from
+    the filesystem: a `.git` that arrived without its refs would let a backend derive a version
+    nobody chose rather than fail. The installed version answers the second, and only the second
+    can distinguish "the tag is in the image" from "the build backend used it": the project
+    under test declares no version anywhere in its tree, so `2.0.0` cannot come from anywhere
+    but `git describe` running inside the build.
+    """
+    project, commit = _write_project_versioned_from_git(tmp_path)
+    history = GitHistory(project, worktree_root=tmp_path / "checkouts")
+
+    with history.standalone_checkout(commit) as checkout:
+        built = build_task_image(
+            context=checkout, base_commit=commit, exclude_newer=None, timeout_s=BUILD_BUDGET_S
+        )
+
+    found = run_command(
+        (
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            built,
+            VENV_PYTHON,
+            "-c",
+            _IMAGE_HISTORY_PROBE,
+        ),
+        cwd=Path.cwd(),
+        timeout_s=_PROBE_BUDGET_S,
+        env=minimal_env(),
+        check=True,
+    )
+
+    assert found.stdout.split() == ["dir", "v2.0.0"]
+    # Not `0.0.0`, and not a `LookupError` out of the build: the version the project's own tag
+    # implies, derived by the project's own backend from the history in the context.
+    assert installed_version(built, "gadget") == (2, 0, 0)
+
+
+def test_the_workspace_a_trial_mounts_carries_no_history_the_image_would_have_answered_from(
+    tmp_path: Path,
+) -> None:
+    """The other half of ADR-0062's split, and the one a leak would be silent in.
+
+    The image now holds a clone carrying every ref, the fix commit's among them. That is only
+    safe because a trial replaces `/workspace` with a bind mount of a *linked worktree*, whose
+    `.git` is a pointer at a clone outside the container. If the mount ever stopped shadowing
+    the image's copy, or the workspace ever became standalone, every tool under test could read
+    the answer out of `git log` with `--read-only` and `--cap-drop ALL` doing nothing about it.
+    """
+    root = build_fixture_repo(tmp_path / "repo")
+    commit = FIXTURE_COMMITS[0].sha
+    history = GitHistory(root, worktree_root=tmp_path / "worktrees")
+
+    with history.standalone_checkout(commit) as checkout:
+        built = build_task_image(
+            context=checkout, base_commit=commit, exclude_newer=None, timeout_s=BUILD_BUDGET_S
+        )
+
+    with history.worktree(commit) as workspace:
+        found = run_command(
+            (
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--volume",
+                f"{workspace.as_posix()}:{WORKSPACE_DIR}:ro",
+                built,
+                VENV_PYTHON,
+                "-c",
+                _MOUNTED_HISTORY_PROBE,
+            ),
+            cwd=Path.cwd(),
+            timeout_s=_PROBE_BUDGET_S,
+            env=minimal_env(),
+            check=True,
+        )
+
+    # A file rather than a directory, and a pointer at a path the container cannot resolve.
+    assert found.stdout.split() == ["file", "gitdir:"]
 
 
 def test_a_context_git_has_never_heard_of_is_refused_rather_than_built(tmp_path: Path) -> None:
@@ -650,7 +992,7 @@ def test_a_context_git_has_never_heard_of_is_refused_rather_than_built(tmp_path:
         ((" M widget/calc.py",), (" M widget/calc.py",)),
         (("?? scratch.txt",), ("?? scratch.txt",)),
         (("A  widget/added.py", "?? .venv/"), ("A  widget/added.py",)),
-        (("?? .venv/", "?? __pycache__/", "?? .git"), ()),
+        (("?? .venv/", "?? __pycache__/"), ()),
         (("?? widget/__pycache__/",), ("?? widget/__pycache__/",)),
         (("?? .venv-of-somebody-elses/",), ("?? .venv-of-somebody-elses/",)),
         (

@@ -38,7 +38,7 @@ from assay.sandbox import (
     image_tag,
     render_agent_dockerfile,
 )
-from tests.sandbox.support import BUILD_BUDGET_S, fixture_worktree, image_created_at
+from tests.sandbox.support import BUILD_BUDGET_S, fixture_checkout, image_created_at
 
 # The path `assay.sandbox.adapter_phase_command` invokes, spelled out here rather than imported
 # from the module that builds the argv. An oracle that reads its answer out of the code under
@@ -71,7 +71,7 @@ def task_image(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[str, 
         phase layers over.
     """
     root = tmp_path_factory.mktemp("agent-image")
-    with fixture_worktree(root) as (checkout, commit):
+    with fixture_checkout(root) as (checkout, commit):
         yield (
             build_task_image(
                 context=checkout,

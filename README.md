@@ -19,12 +19,14 @@ what it does and does not establish — rather than being summarised here, becau
 lossy second copy of those documents and it drifted
 ([ADR-0055](docs/adr/0055-the-readme-is-a-release-document-not-a-changelog.md)).
 
-**The results this repository publishes are the two oracles.** `ground-truth` replays the recorded
-fix and scores 1.0; `null` returns an empty diff and scores 0.0; between them they bracket every
-real result precisely by not being one. **No model has been called in any milestone, on any path,
-by any adapter** — no API key has been read and nothing has been spent
-([ADR-0051](docs/adr/0051-m5s-two-tools-are-two-oracles.md)). Every command works, and nothing has
-been graded by one. Those are two different sentences and both are true here.
+**The results this repository publishes are the two oracles and one local baseline.**
+`ground-truth` replays the recorded fix and scores 1.0; `null` returns an empty diff and scores
+0.0; between them they bracket every real result precisely by not being one
+([ADR-0051](docs/adr/0051-m5s-two-tools-are-two-oracles.md)). **A model has now been called, and a
+run has been scored by one** — one small model, served by a daemon on this machine, against one
+repository's suite. **No API key has been read and nothing has been spent**, and that stays true
+because the daemon is local. What that run does and does not establish is written up in
+[`local-model-live-run.md`](docs/milestones/local-model-live-run.md) rather than summarised here.
 
 Mining has been run by hand over real repositories three times, and all three runs are on the
 record. M1 walked [743 commits of httpie](docs/milestones/m1-yield-httpie.md) for **0 valid
@@ -49,13 +51,18 @@ limit sidestepped by advance selection, not a reach limit lifted**. ADR-0019 is 
 repository whose test dependencies are unpinned still cannot be mined this way, and nothing in the
 run bears on one. Three repositories chosen that way are not a sample of anything, so 2.3% is not
 an estimate of any population and carries no interval. And **those 14 tasks have never been
-re-validated or run by any tool** — they passed the red→green gate once, at mining time, which is
-what "valid task" means and all it means. That Assay can mine a suite is demonstrated; that it has
-mined a suite worth running is not.
+re-validated, and no tool has run any of them** — they passed the red→green gate once, at mining
+time, which is what "valid task" means and all it means. Thirteen of the fourteen
+came from one of the three, and that suite - the same one, by content hash - has since been scored
+once by the local baseline: eleven of its thirteen measured, two that could not be provisioned. A
+baseline is not a tool, so the sentence above stands as written. That Assay can
+mine a suite is demonstrated; that it has mined a suite worth running is not.
 
 Two things are still true and worth reading twice: the container holds *trials*, so a mining walk
 runs the target repository's build and test suite **on this machine, outside a sandbox** — and no
-interval printed today describes a tool that called a model.
+interval printed today describes a *tool* that called a model. The one run that called a model ran
+a baseline: one raw model call, no agent loop, against a suite mined from one repository. The
+agentic adapter has still never called a model.
 
 ## What it does today
 
@@ -126,7 +133,9 @@ fresh per render and never persisted
   the shape the miner already reaches, so the second result sidesteps
   [ADR-0019](docs/adr/0019-m1-cannot-mine-unpinned-test-dependencies.md)'s reach limit rather than
   lifting it, and a repository whose test dependencies are unpinned still cannot be mined here.
-  None of those 14 tasks has been re-validated or scored by anything since. `assay mine` also runs
+  None of those 14 tasks has been re-validated since, and no tool has scored any of them; thirteen of the
+  fourteen came from one repository, and eleven of those have since been scored once by the local
+  baseline, which is a baseline and not a tool. `assay mine` also runs
   the host path only — M2's pinned per-task image was never wired into it
   ([ADR-0053](docs/adr/0053-the-public-repo-yield-uses-the-shipped-command-on-the-host-path.md)) —
   so 14 is a floor on that path rather than a measurement of Assay's reach.
@@ -135,24 +144,38 @@ fresh per render and never persisted
   this tool run here* — DNS, egress, proxies, TLS interception. Assay answers *is it any
   good here*. Portcall goes ahead of the deployment; Assay comes after it. They share no
   code.
-- **No real tool has been scored yet.** `assay run` is built and exercised end to end, but only by
-  the two oracles: ground truth scores 1.0 and null 0.0 over a suite mined from the synthetic
-  fixture repository, which brackets every real result without being one. The naive baseline and
-  the agentic Claude Code adapter are built, unit-tested on fakes and container-tested, and **have
-  never called a model** — so this repository contains no naive-vs-agentic comparison and no
-  evidence that either adapter can solve anything.
-  **Neither M4 nor M5 changed that.** This section used to say the first live run was M4's; M4
-  called no model and spent nothing, and neither did M5, so the promise is withdrawn here rather
-  than quietly deleted
-  ([ADR-0042](docs/adr/0042-the-readme-withdraws-the-promise-of-a-live-run.md)), and no milestone
-  owns the live run. Mining and validation stay narrow: one repository family, test-anchored
-  commits, and a walk that runs on the host rather than in a container. The interval
+- **No real tool has been scored yet — a baseline has.** `assay run` is built and exercised end to
+  end by the two oracles: ground truth scores 1.0 and null 0.0 over a suite mined from the synthetic
+  fixture repository, which brackets every real result without being one. It has since been run once
+  with a third adapter beside those two, over a suite mined from a real repository: the naive
+  baseline pointed at a model served by a daemon on this machine, one raw model call and no agent
+  loop. That is a baseline and not a tool, and under
+  [ADR-0060](docs/adr/0060-the-local-baseline-is-exempt-and-does-not-discharge-the-rule.md) it does
+  not supply the baseline a run naming a tool has to carry. The metered naive adapter and the
+  agentic Claude Code adapter are built, unit-tested on fakes and container-tested, and **have never
+  called a model** — so this repository still contains no naive-vs-agentic comparison, and no
+  evidence that the agentic adapter can solve anything.
+  **Neither M4 nor M5 called a model, and the run that since has belongs to no milestone.** This section used to say the
+  first live run was M4's; M4 called no model and spent nothing, and neither did M5, so the promise
+  was withdrawn here rather than quietly deleted
+  ([ADR-0042](docs/adr/0042-the-readme-withdraws-the-promise-of-a-live-run.md)). What that record
+  said beside the withdrawal — that the numbers printed here came from the two oracles alone, and that
+  the paired test and the bootstrap band had never been computed over a run that called a model — is
+  retired now ([ADR-0072](docs/adr/0072-a-premise-of-adr-0042-is-overtaken-and-the-rule-stands.md)),
+  in the same place it was written, because a run that no milestone owns has called one.
+  **No milestone
+  owns the live run** — that part stands, which is why what the run does and does not establish is
+  written up in its own record rather than under a milestone's.
+  Mining and validation stay narrow: one repository family, test-anchored commits, and a walk that
+  runs on the host rather than in a container. The interval
   `assay report` prints around pass^n is a real Wilson band over tasks; M4 gave pass@1 its own
   by a different method, a seeded percentile bootstrap over tasks, and the report names both
   methods rather than printing two bands as though one procedure produced them. M4's paired
   significance test — exact McNemar over the tasks two tools disagree on — landed the same way.
-  Both were validated against hand-computed fixtures and the two oracles' free results, and
-  neither has ever been computed over a run that called a model.
+  Both were validated against hand-computed fixtures and the two oracles' free results, and until
+  the local baseline's run neither had ever been computed over a run in which any adapter called a
+  model. That run is one baseline against two oracles, so what the paired test has compared is a
+  baseline and its bracket, never two tools.
 
 ## Trust properties
 

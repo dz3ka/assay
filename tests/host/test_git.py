@@ -12,12 +12,13 @@ each (codebase map, "Windows dev host vs ubuntu-latest CI").
 """
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from assay.host import GitError, GitHistory, checkout_state
+from assay.host import GitError, GitHistory, checkout_description, checkout_state
 from assay.host.git import _as_utc_instant
 from assay.mine.protocols import History
 from tests.fixture_repo import FIXTURE_COMMITS, build_fixture_repo
@@ -114,6 +115,21 @@ def _history(tmp_path: Path) -> tuple[GitHistory, Path]:
     )
 
     return GitHistory(repo, worktree_root=tmp_path / "worktrees"), repo
+
+
+def _tagged_history(tmp_path: Path) -> tuple[GitHistory, Path]:
+    """:func:`_history`, with its root commit tagged.
+
+    A separate fixture rather than a tag added to `_history`, because every object name that
+    fixture yields is asserted on elsewhere in this module and a lightweight tag is still a ref
+    the walk could pick up. What the tag is *for* is the half of a standalone checkout that a
+    worktree cannot have: a build backend that derives a version from `git describe` has
+    something to describe from.
+    """
+    history, repo = _history(tmp_path)
+    root = _git(repo, "rev-list", "--max-parents=0", "HEAD").strip()
+    _git(repo, "tag", "v1.2.3", root)
+    return history, repo
 
 
 def _subjects(history: GitHistory, *, limit: int | None = None) -> list[str]:
@@ -359,6 +375,136 @@ def test_the_users_clone_is_never_checked_out_or_dirtied(tmp_path: Path) -> None
     assert _git(repo, "status", "--porcelain") == ""
 
 
+def test_a_worktree_points_at_the_clone_rather_than_holding_a_repository(tmp_path: Path) -> None:
+    """The leak boundary, pinned from the side that must never move.
+
+    A worktree is what a *trial* mounts, and its history is one pointer file back to a clone the
+    container cannot see - which is why a tool under test cannot read the fix out of it. If this
+    ever starts yielding a real `.git` directory, every trial is handed the answer key with
+    `--read-only` and `--cap-drop ALL` doing nothing about it.
+    """
+    history, _ = _history(tmp_path)
+    fix = next(commit for commit in history.commits(limit=None) if commit.subject.startswith("fix"))
+
+    with history.worktree(fix.parent) as workspace:
+        pointer = workspace / ".git"
+
+        assert pointer.is_file()
+        assert pointer.read_text(encoding="utf-8").startswith("gitdir:")
+
+
+def test_a_standalone_checkout_holds_the_commit_in_a_repository_of_its_own(
+    tmp_path: Path,
+) -> None:
+    # The property the whole thing exists for: a build backend that versions the project from
+    # git finds a repository where it looks, rather than a pointer at one it cannot reach.
+    history, _ = _tagged_history(tmp_path)
+    fix = next(commit for commit in history.commits(limit=None) if commit.subject.startswith("fix"))
+
+    with history.standalone_checkout(fix.sha) as checkout:
+        assert (checkout / ".git").is_dir()
+
+        state = checkout_state(checkout)
+        assert state.head == fix.sha
+        # Clean, because the precondition a build context is put through refuses anything else.
+        assert state.changed == ()
+        assert (checkout / "src" / "app.py").read_text(encoding="utf-8") == _FIXED_SOURCE
+
+
+def test_a_standalone_checkout_can_describe_itself_from_the_tag_it_carries(
+    tmp_path: Path,
+) -> None:
+    # `--local` is supposed to bring the tags with it, and a build that derives a version from
+    # them would otherwise fail in the image rather than here. This is the assertion that says
+    # the clone carried them, rather than the assumption that it did.
+    history, _ = _tagged_history(tmp_path)
+    fix = next(commit for commit in history.commits(limit=None) if commit.subject.startswith("fix"))
+
+    with history.standalone_checkout(fix.sha) as checkout:
+        described = checkout_description(checkout)
+
+    assert described.startswith("v1.2.3-")
+    assert described.endswith(fix.sha)
+
+
+def test_a_standalone_checkout_writes_neither_this_machines_path_nor_its_operator(
+    tmp_path: Path,
+) -> None:
+    """ADR-0065: the clone's `.git` goes into a published image, so it carries no host in it.
+
+    The build copies this directory wholesale, and an image is content the repository's author
+    publishes. Measured before the fix (2026-09-10, this host), `.git/logs/HEAD` held all three
+    in one plaintext line - the source path, the operator's real name and email, and a wall
+    clock - which no amount of `remote remove origin` touches:
+
+        0000... a4309a...  Bogdan Dzekic <...@users.noreply.github.com> 1789018964 +0200
+        clone: from C:/Users/.../src
+
+    So the reflog is never written rather than scrubbed afterwards, and the remote is removed
+    on top of that for the `[remote "origin"]` and `[branch "master"]` stanzas in `.git/config`.
+
+    Scanned as bytes over every file, because the property is about what a reader of the image
+    can find rather than about two filenames: an identity is looked for as any plaintext
+    `<...@...>` ident, which is host-independent - the fixture's own commits carry one, but a
+    loose object is zlib-compressed and does not answer a plaintext search.
+    """
+    history, repo = _tagged_history(tmp_path)
+    fix = next(commit for commit in history.commits(limit=None) if commit.subject.startswith("fix"))
+    paths = (str(repo).encode(), repo.as_posix().encode())
+    ident = re.compile(rb"<[^<>\s]+@[^<>\s]+>")
+
+    with history.standalone_checkout(fix.sha) as checkout:
+        git_dir = checkout / ".git"
+        found = [path for path in git_dir.rglob("*") if path.is_file()]
+        for path in found:
+            content = path.read_bytes()
+            assert not any(spelling in content for spelling in paths), (
+                f"{path.relative_to(git_dir).as_posix()} carries this machine's path"
+            )
+            assert not ident.search(content), (
+                f"{path.relative_to(git_dir).as_posix()} carries an operator identity"
+            )
+
+        # Named as well as scanned: the two that used to hold the residue, so a failure says
+        # which mechanism regressed rather than only which byte was found.
+        assert not (git_dir / "logs").exists()
+        assert "[remote " not in (git_dir / "config").read_text(encoding="utf-8")
+        # And the reason the clone exists in the first place is unmoved (ADR-0063): the address
+        # a build context contributes still resolves to the tag.
+        assert checkout_description(checkout).startswith("v1.2.3-")
+
+
+def test_a_standalone_checkout_is_destroyed_even_when_the_body_raises(tmp_path: Path) -> None:
+    # It holds a whole second copy of the history, so a leaked one is not a stray directory but
+    # a repository per trial sitting in the user's temp space.
+    history, _ = _tagged_history(tmp_path)
+    fix = next(commit for commit in history.commits(limit=None) if commit.subject.startswith("fix"))
+
+    with (
+        pytest.raises(RuntimeError, match="the build exploded"),
+        history.standalone_checkout(fix.sha) as checkout,
+    ):
+        raise RuntimeError("the build exploded")
+
+    assert not checkout.exists()
+
+
+def test_a_standalone_checkout_leaves_the_users_clone_as_it_found_it(tmp_path: Path) -> None:
+    # `worktree`'s standing guarantee, asked of the other kind of checkout: this one clones the
+    # user's repository, and a clone that dirtied its source would be worse than a checkout that
+    # did, because nothing about `clone` looks like it touches the tree it reads.
+    history, repo = _tagged_history(tmp_path)
+    fix = next(commit for commit in history.commits(limit=None) if commit.subject.startswith("fix"))
+    head = _git(repo, "rev-parse", "HEAD").strip()
+
+    with history.standalone_checkout(fix.parent) as checkout:
+        (checkout / "src" / "app.py").write_text("scribbled\n", encoding="utf-8", newline="\n")
+
+    assert _git(repo, "rev-parse", "HEAD").strip() == head
+    assert _git(repo, "status", "--porcelain") == ""
+    assert _git(repo, "worktree", "list").count("\n") == 1
+
+
 def test_a_commits_own_patch_applies_to_a_checkout_of_its_parent(tmp_path: Path) -> None:
     history, _ = _history(tmp_path)
     fix = next(commit for commit in history.commits(limit=None) if commit.subject.startswith("fix"))
@@ -459,6 +605,9 @@ def test_a_revision_that_is_not_an_object_name_is_refused(tmp_path: Path, hostil
         history.worktree(hostile).__enter__()
 
     with pytest.raises(GitError):
+        history.standalone_checkout(hostile).__enter__()
+
+    with pytest.raises(GitError):
         history.committed_at(hostile)
 
 
@@ -530,3 +679,44 @@ def test_a_path_that_is_not_a_checkout_is_refused_rather_than_answered(tmp_path:
 
     with pytest.raises(GitError):
         checkout_state(empty)
+
+
+def test_a_checkout_with_no_tag_in_sight_describes_itself_by_its_object_name(
+    tmp_path: Path,
+) -> None:
+    # `--always` is what makes this an answer rather than a failure, and `--abbrev=40` is what
+    # keeps the answer one string: an abbreviation is as long as the repository needs it to be,
+    # and this value goes into a content address.
+    repo = _checkout(tmp_path)
+
+    described = checkout_description(repo)
+
+    assert described == _git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_a_tag_reachable_from_the_head_is_what_the_description_is_counted_from(
+    tmp_path: Path,
+) -> None:
+    # Two checkouts of one commit, one of which can see a tag: the version a build backend
+    # derives differs between them, so the description has to differ too or one address would
+    # name both environments.
+    repo = _checkout(tmp_path)
+    untagged = checkout_description(repo)
+    _git(repo, "tag", "v0.9.0")
+
+    tagged = checkout_description(repo)
+
+    assert tagged.startswith("v0.9.0-0-g")
+    assert tagged != untagged
+
+
+def test_a_path_git_cannot_describe_is_refused_rather_than_described_as_nothing(
+    tmp_path: Path,
+) -> None:
+    # The same refusal `checkout_state` gives the same directory: an empty description would be
+    # a build input silently missing from an address that claims to hold every one of them.
+    empty = tmp_path / "not-a-repo"
+    empty.mkdir()
+
+    with pytest.raises(GitError):
+        checkout_description(empty)

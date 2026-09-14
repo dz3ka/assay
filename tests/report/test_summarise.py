@@ -88,7 +88,17 @@ def _result(
 
 
 def _result_set(*results: Result) -> ResultSet:
-    return ResultSet(schema_version=1, suite_hash=SUITE_HASH, results=results)
+    """A complete run: the suite held exactly the tasks these trials were run against.
+
+    Summarising is about rates over trials, not coverage, so every set built here measured
+    every task it was given - the denominator is the number of distinct tasks present.
+    """
+    return ResultSet(
+        schema_version=1,
+        suite_hash=SUITE_HASH,
+        results=results,
+        suite_task_count=len({result.task_id for result in results}),
+    )
 
 
 def _one_trial_each(tasks: tuple[str, ...], solved: dict[str, set[str]]) -> ResultSet:
@@ -287,6 +297,62 @@ def test_a_perfect_tool_at_two_tasks_still_wins_nothing() -> None:
     (comparison,) = report.comparisons
     assert comparison.verdict.winner is None
     assert comparison.verdict.reason is VerdictReason.INTERVALS_OVERLAP
+
+
+def test_a_report_carries_the_coverage_the_result_set_recorded() -> None:
+    # The shape of the live run that forced ADR-0067: thirteen tasks in the suite, twelve
+    # measured, one whose image would not build. build_report reads all three off the result
+    # set it was already given - no new argument, because a denominator a caller has to
+    # remember to pass is a denominator some caller forgets (ADR-0070).
+    measured = tuple(f"t{n}" for n in range(1, 13))
+    result_set = ResultSet(
+        schema_version=1,
+        suite_hash=SUITE_HASH,
+        results=tuple(_result(task, "ground-truth", 0, Outcome.PASSED) for task in measured),
+        suite_task_count=13,
+        unprovisioned={"t13": "the image would not build"},
+    )
+
+    report = build_report(result_set, summarise(result_set))
+
+    assert report.suite_tasks == 13
+    assert report.measured_tasks == 12
+    assert report.unprovisioned_tasks == ("t13",)
+
+
+def test_a_report_counts_tasks_where_the_trial_log_counts_trials() -> None:
+    # Twelve trials of one task is one task measured, not twelve. The trial log stays a log -
+    # one line per result - and the denominator it sits under counts the distinct tasks those
+    # lines are about, or a five-trial run would read as five times the coverage it had.
+    result_set = ResultSet(
+        schema_version=1,
+        suite_hash=SUITE_HASH,
+        results=tuple(_result("t1", "ground-truth", trial, Outcome.PASSED) for trial in range(5)),
+        suite_task_count=2,
+        unprovisioned={"t2": "the image would not build"},
+    )
+
+    report = build_report(result_set, summarise(result_set))
+
+    assert len(report.tasks) == 5
+    assert report.measured_tasks == 1
+    assert report.suite_tasks == 2
+
+
+def test_the_unprovisioned_tasks_are_reported_in_a_stable_order() -> None:
+    # A mapping has an insertion order a reader cannot see and a diff can change, so the report
+    # sorts. Two runs that could not provision the same three tasks produce the same line.
+    result_set = ResultSet(
+        schema_version=1,
+        suite_hash=SUITE_HASH,
+        results=(),
+        suite_task_count=3,
+        unprovisioned={"t3": "no build", "t1": "no build", "t2": "no build"},
+    )
+
+    report = build_report(result_set, summarise(result_set))
+
+    assert report.unprovisioned_tasks == ("t1", "t2", "t3")
 
 
 def test_the_disjoint_fixture_reports_a_winner() -> None:

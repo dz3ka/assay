@@ -197,9 +197,153 @@ REQUIRED_HEADINGS = (
 # the tokens on this page rests on the type of the argument rather than on a check the renderer
 # never performs; it applies 0049 as well, and neither record supersedes anything.
 #
-# The set is contiguous, and that is the assertion. Fifty-eight files is the number a reviewer
-# should find, numbered 0001 through 0058 with nothing missing.
-EXPECTED_NUMBERS = {f"{number:04d}" for number in range(1, 59)}
+# 0059 is the first record about calling a model at all: five milestones of oracles have never
+# sent a prompt anywhere, a paid call is refused outright, and a model served on this machine is
+# the way out - so the loopback transport is a second class beside the keyed one rather than a
+# widened allowlist, on the ground that bytes which never leave the machine are not what the
+# allowlist controls. It applies 0036 without touching the fence, and discloses where it departs
+# from the SSRF rule it inverts.
+#
+# 0060 and 0061 are what wiring that transport into the CLI forces, and they are two decisions
+# rather than one because they answer to different authorities. 0060 answers to CLAUDE.md's rule
+# that the naive baseline is in every report: a free local baseline is exempt from being asked for
+# a paid one, and does not stand in for one when a tool is named, because a measurement rule
+# satisfiable by choosing a weaker opponent is not a rule. 0061 answers to ADR-0051, which
+# rejected exactly this substitution two days earlier and named three grounds; it overturns that
+# one bullet, discharges each ground, and leaves 0051's decision and its file alone - the only
+# record here that amends another without touching a line of it. It also settles that the local
+# endpoint is a compiled-in constant, since an endpoint a command line can redirect is one the
+# prompt can be redirected to.
+#
+# 0062 and 0063 are what the local-model run's blocker forces, and the first pair here whose
+# subject is Assay's own checkout rather than a repository it reads. Thirteen task images could
+# not be built because the build context was a linked worktree with its `.git` excluded, and a
+# repository that versions itself from git - setuptools-scm, hatch-vcs, pdm-backend, versioneer -
+# has nothing to derive a version from in a tree like that. 0062 records that this is a defect in
+# how Assay checks out rather than a reach limit of the commit, which is the distinction ADR-0025
+# draws and the reason "tenacity is unscoreable" is not publishable: a plain clone builds it. The
+# context becomes a standalone checkout carrying real history, and the *trial workspace*
+# deliberately does not, because a workspace with every ref in it is a bind-mounted answer key.
+# The record also states, with the measurement inline, the half the decision does not close: the
+# base image has no git executable, so the history it now carries is still inert.
+# 0063 is what that costs the address. Removing `.git` from the exclusions changes what is inside
+# an image while every existing tag stays put, and the dockerignore that decides it had never been
+# hashed - the same gap `_BASE_IMAGE` was closed against. A clone's visible history joins it,
+# because history is a build input now and it is a property of the clone rather than of the
+# commit. Both are one optional `context` key rather than two required arguments, so the two
+# phases that build from an empty directory keep the addresses they already had.
+#
+# 0064 and 0065 finish what 0062 started, and each is a decision that record deliberately did not
+# make. 0064 puts a git in the measurement image: the history 0062 restored is inert without a
+# reader, the base image ships none, and the fix is a line in the recipe - which is the content
+# address, so it re-addresses every task image ever built and is therefore a decision rather than
+# a repair. It is pinned to a version for the reason `_BASE_IMAGE` is pinned to a digest, and it
+# sits above `COPY` where nothing about it varies with the commit, so the daemon holds one copy
+# instead of one per image. What it does not claim is written down beside it: the package's
+# dependency closure is unpinned, so the layer is not byte-reproducible over time.
+# 0065 corrects a residue 0062 recorded wrongly. That record named `.git/config` as the carrier of
+# this machine's path, which makes a one-line `remote remove origin` read as sufficient; measured,
+# `.git/logs/HEAD` independently holds the path, the operator's real name and email, and a wall
+# clock, and the remote's removal never touches it. The clone writes no reflog at all now. The
+# record is equally explicit that byte-identity across hosts is *not* what this buys and cannot
+# be: the index holds stat data and the config holds platform-probed capabilities.
+#
+# 0066 is the only record here that changes no code, and its subject is what Assay will not do
+# yet. `assay mine` provisions a candidate on the host while `assay run` scores one in an
+# era-pinned image, so the gate that admits a task to a suite runs somewhere other than the thing
+# that sells it - named in 0053, left open there deliberately, and narrowed rather than closed by
+# 0062 through 0065, which bought both paths a real git repository and nothing beyond that. The
+# standing recommendation across four sessions was an ADR deferring it indefinitely; this record
+# overrules that and gives it a milestone, on the ground that a known measurement asymmetry made
+# permanent is the thing this repository exists to refuse. What it declines to do is close it
+# first: a mine run through the image path produces a different suite, a different hash and a
+# different denominator, which voids a pre-registration written while no result existed - so the
+# sequencing is the decision, and it is on the record before the number is. The wall clock that
+# motivated it is marked `unverified:` in its own text, no per-image build time having ever been
+# measured on this host, and the record says the argument does not rest on it.
+#
+# 0067 is the schema the next two write into, landed first so that they stay revertible without
+# it. A result set said only which trials happened, so three trials of each of twelve tasks and
+# three trials of each of twelve tasks out of thirteen were the same document, and pass^n over it
+# was a rate whose denominator no reader could check - the numerator-alone failure CLAUDE.md
+# names on the mining side, where `MiningYield` has carried its denominator beside its numerator
+# since M1. `ResultSet` gains that denominator as a required field, because one that defaulted
+# would read as zero beside twelve measured tasks, and a map of task id to the sentence that
+# failed it rather than a tuple of two-field records, so a task named twice with two reasons is
+# unwritable rather than merely invalid. The denominator is stored and not derived: nothing in
+# this repo resolves a suite digest back to the suite, so a `--suite` argument at report time
+# would let two readers of one file print two coverages, and the number wanted is a fact about
+# the run rather than about a file someone points at later. Its validator compares with `<=`
+# where the mining side's compares with `!=`, which is 0069's cadence showing through - a file
+# covering one task of thirteen is a run in progress, not a counting bug - and what stays refused
+# is the direction that can flatter: more coverage claimed than the suite holds, or one task
+# counted on both sides at once.
+#
+# 0068 and 0069 fill the fields 0067 declared, and they are two records because they answer two
+# different questions about the same loop. 0068 is what a run does about a task it cannot
+# provision: one state for both causes, since an image that will not build and a test patch that
+# refuses at its base commit are the same failure a layer apart and neither is the tool under
+# test; and a task that fails partway keeps none of the trials it scored, because three surviving
+# trials of five would be published as that task's pass^n with an exponent no reader can see.
+# 0069 is when the file is written: after every task and once before the first, where it used to
+# be written once at the end. That record quotes the reasoning it overturns and answers it rather
+# than dropping it - the ambiguity write-once guarded against was "a short file cannot say what it
+# is short of", and 0067's denominator is what makes the short file self-describing. Both premises
+# of the old rule are gone, and the live run that lost 105 scored trials to a single unbuildable
+# task is what made the second one false.
+#
+# 0070 is where 0067's fields reach a reader. The denominator had been in the file since 0067 and
+# on no page at all: a run of twelve tasks out of thirteen rendered as pass^n, two bands and a
+# costs table over twelve, under a heading carrying the suite digest and nothing else, which is
+# the numerator alone that CLAUDE.md forbids by name. The coverage line goes in both prose
+# formats on every report - including the run that missed nothing, because a section appearing
+# only when it had bad news in it would make its absence the claim (0035, as 0046 already
+# settled for the costs). The shape is the decision: three flat fields rather than a `Coverage`
+# sub-model, because `redact` names every field one at a time and that is the guarantee rather
+# than the style - a nested model would type-check while carrying an unhashed identifier onto a
+# page whose own sentence says every identifier on it is a token (0058). The unprovisioned ids
+# are hashed under the same `ident` kind a trial line's id gets, so the one task with no trials
+# anywhere in the document is one a reader can look for in the log and confirm is absent.
+#
+# 0071 is the first record here whose subject is a question rather than a change, and it closes one
+# that had been carried unanswered through five sessions: whether a later milestone should supersede
+# 0025 and try the setuptools floor as a disclosed second widening. Two things make it answerable
+# from the record that already existed. The blocker that made it feel urgent turned out to share a
+# word with it and not a cause - the thirteen images that would not build failed in setuptools-scm,
+# on a build context Assay itself had emptied, and 0062 through 0065 closed that without touching
+# the resolver. And the residue 0025 actually named arrived again on a second repository: the scored
+# run covers eleven of thirteen tasks, and both it could not provision failed on `distutils` under
+# an era pin, which is the exact case a floor would patch. The decision is that the floor stays
+# declined for 0025's unweakened reason - a version constraint Assay invented makes the environment
+# one that never existed - and that it stops being carried, because a question re-read and re-costed
+# every session while the evidence to settle it sits complete is a cost paid in instalments. 0025 is
+# not edited, on the immutability pattern 0054 and 0061 set, and the two tasks get the coverage line
+# 0070 prints rather than a patch.
+#
+# 0072 does for 0042 what 0054 did for 0050: two of its statements of fact are overtaken and its
+# rule stands. 0042 told a reader the numbers printed here came from the two oracles, and that the
+# bootstrap band and the McNemar p had never been computed over a run that called a model; the
+# local baseline's run printed a third adapter's figures and a p over an adapter that had called
+# one. Its surviving neighbour - no report has computed either over a *tool* that called a model -
+# is kept on purpose, because 0060 makes the local baseline not a tool. It amends 0042 and 0055
+# without editing either, carries the mark in the index row alone rather than a blockquote inside
+# 0042, and binds no new general rule: the proposed one was argued from a run 0066 had already
+# made a milestone, so it waits for a run that 0042's rule demonstrably fails to reach.
+#
+# 0073 gives one state one shape. The run already named each task it could not measure beside the
+# sentence that failed it (0067, 0068); the mine only counted its unprovisioned commits, because the
+# host seam caught the setup error and handed `None` back, dropping the one sentence that said why -
+# and a sentence was the whole of 0071's finding. The user ruled for the mapping: `MiningYield`
+# names each commit by full sha with the failure's own words, the factory returns an `Unprovisioned`
+# value that carries them, and `assay mine` prints one reason line per commit on stderr while its
+# yield line stays byte-identical. The partition counts the mapping's size, so the fixture's exact
+# yield does not move, and no suite or content address changes because the yield is never
+# serialised. It amends 0015, which is shipped and so is marked in its index row only, and 0066,
+# which is not yet shipped and so carries a dated blockquote as well.
+#
+# The set is contiguous, and that is the assertion. Seventy-three files is the number a reviewer
+# should find, numbered 0001 through 0073 with nothing missing.
+EXPECTED_NUMBERS = {f"{number:04d}" for number in range(1, 74)}
 
 # A markdown link target that names an ADR file: `[0005](0005-no-winner-....md)`.
 _ADR_LINK = re.compile(r"\]\((\d{4}-[a-z0-9-]+\.md)\)")

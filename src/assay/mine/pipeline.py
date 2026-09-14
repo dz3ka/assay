@@ -45,7 +45,7 @@ from assay.mine.models import (
     GateRejection,
     MiningYield,
 )
-from assay.mine.protocols import History, RunnerFactory
+from assay.mine.protocols import History, RunnerFactory, Unprovisioned
 from assay.suite import SuiteBody, Task
 
 
@@ -53,11 +53,11 @@ from assay.suite import SuiteBody, Task
 class MinedCommit:
     """One examined commit: what the gate concluded, and the task if it survived.
 
-    ``outcome`` is ``None`` when the commit's workspace could not be given an environment its
-    tests could run in, so the gate never got to speak (see
+    ``outcome`` is :class:`~assay.mine.protocols.Unprovisioned` when the commit's workspace could
+    not be given an environment its tests could run in, so the gate never got to speak (see
     :data:`assay.mine.protocols.RunnerFactory`). The invariant, which the CLI and the scorer
-    both rely on: ``task is not None`` **iff** ``outcome is not None and outcome.rejection is
-    None``.
+    both rely on: ``task is not None`` **iff** ``outcome`` is a :class:`GateOutcome` whose
+    ``rejection is None``.
 
     The task is carried here rather than rebuilt by the caller because building it needs the
     commit's two patches and its split - values this module already holds and the CLI would
@@ -66,7 +66,7 @@ class MinedCommit:
     """
 
     commit: CommitRef
-    outcome: GateOutcome | None
+    outcome: GateOutcome | Unprovisioned
     task: Task | None
 
 
@@ -115,7 +115,7 @@ def revalidate_suite(
     history: History,
     runner_for: RunnerFactory,
     timeout_s: int,
-) -> Iterator[tuple[Task, GateOutcome | None]]:
+) -> Iterator[tuple[Task, GateOutcome | Unprovisioned]]:
     """Put every task in ``suite`` back through the byte-identical gate that minted it.
 
     This is ``assay validate``. A suite is a claim that these commits went red to green, and a
@@ -161,7 +161,7 @@ def run_gate(
     test_patch: str,
     ground_truth_patch: str,
     timeout_s: int,
-) -> GateOutcome | None:
+) -> GateOutcome | Unprovisioned:
     """Gather SPEC §3's evidence for one candidate and hand it to :func:`decide_gate`.
 
     The sequence is the specification's, in order: check the parent out, apply the test patch
@@ -173,11 +173,12 @@ def run_gate(
     (``History.worktree`` is a context manager for this reason) rather than to this function.
 
     Returns:
-        The gate's verdict, or ``None`` if the workspace could not be given an environment its
-        tests could run in. ``None`` is neither a verdict nor an abort: provisioning is per
-        commit, so a repository mined back past the commit that introduced its packaging has
-        commits that cannot be installed, and a walk that died on the first of them would
-        report no yield at all. It is counted as ``MiningYield.unprovisioned``.
+        The gate's verdict, or the factory's own :class:`~assay.mine.protocols.Unprovisioned`
+        value, unchanged, if the workspace could not be given an environment its tests could run
+        in. That is neither a verdict nor an abort: provisioning is per commit, so a repository
+        mined back past the commit that introduced its packaging has commits that cannot be
+        installed, and a walk that died on the first of them would report no yield at all. It
+        is named, with its reason, in ``MiningYield.unprovisioned``.
     """
     selectors = pytest_selectors(split.test_files)
     if not selectors:
@@ -194,8 +195,8 @@ def run_gate(
         # an environment first: provisioning is seconds per candidate and this is the one
         # rejection that is knowable without it.
         runner = runner_for(workspace)
-        if runner is None:
-            return None
+        if isinstance(runner, Unprovisioned):
+            return runner
         red = runner.run(workspace, selectors, timeout_s=timeout_s)
         if red.timed_out:
             # Duplicating ``decide_gate``'s first check on purpose. That rule returns
@@ -212,11 +213,14 @@ def run_gate(
     return decide_gate(red, greens)
 
 
-def tally_yield(outcomes: Iterable[GateOutcome | None]) -> MiningYield:
-    """Add a completed run's outcomes up into the line CLAUDE.md requires every report to carry.
+def tally_yield(mined: Iterable[MinedCommit]) -> MiningYield:
+    """Add a completed run's commits up into the line CLAUDE.md requires every report to carry.
 
-    One outcome per examined commit - including a ``None``, which is a commit the walk yielded
-    and no gate spoke about - so ``commits_examined`` is simply how many there were.
+    One entry per examined commit - including an ``Unprovisioned`` one, which is a commit the
+    walk yielded and no gate spoke about - so ``commits_examined`` is simply how many there
+    were. The commits rather than their bare outcomes, because an unprovisioned commit is named
+    by its sha beside its reason (ADR-0073), and a sha that arrives twice collapses to one entry
+    and leaves a partition :class:`MiningYield` refuses.
     Every reason appears in ``rejected``, zeros included: a sparse mapping would make "this
     reason never fired" and "this reason was not looked for" the same document, and telling
     those apart is the whole of yield honesty (ADR-0015 is the same argument applied to a
@@ -226,10 +230,15 @@ def tally_yield(outcomes: Iterable[GateOutcome | None]) -> MiningYield:
     :class:`MiningYield`'s own validator, so a yield read back from a file is refusable on the
     same terms as one counted in process (ADR-0011).
     """
-    decided = tuple(outcomes)
-    judged = tuple(outcome for outcome in decided if outcome is not None)
+    examined = tuple(mined)
+    judged = tuple(found.outcome for found in examined if isinstance(found.outcome, GateOutcome))
+    unprovisioned = {
+        found.commit.sha: found.outcome.reason
+        for found in examined
+        if isinstance(found.outcome, Unprovisioned)
+    }
     return MiningYield(
-        commits_examined=len(decided),
+        commits_examined=len(examined),
         candidates=sum(1 for outcome in judged if outcome.rejection not in PRE_GATE_REJECTIONS),
         accepted=sum(1 for outcome in judged if outcome.rejection is None),
         rejected=MappingProxyType(
@@ -238,7 +247,7 @@ def tally_yield(outcomes: Iterable[GateOutcome | None]) -> MiningYield:
                 for reason in GateRejection
             }
         ),
-        unprovisioned=len(decided) - len(judged),
+        unprovisioned=MappingProxyType(unprovisioned),
     )
 
 
@@ -274,7 +283,7 @@ def _mine_one(
     )
     task = (
         None
-        if outcome is None or outcome.rejection is not None
+        if isinstance(outcome, Unprovisioned) or outcome.rejection is not None
         else _task(
             repo_url=repo_url,
             repo_slug=repo_slug,

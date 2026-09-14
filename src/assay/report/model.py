@@ -559,6 +559,14 @@ class Report(SchemaModel):
     absence the report's way of saying something, which is the unexplained blank ADR-0035
     refuses by name; ``prices_source`` is null in exactly that case and names the reader's own
     provenance otherwise.
+
+    The last three fields are the denominator, carried through from the result set that was
+    measured (ADR-0067). Every rate above them is over ``measured_tasks``, and a report that
+    printed those rates without saying what they were out of would be the numerator alone,
+    which CLAUDE.md forbids by name. They are flat rather than a ``Coverage`` sub-model so that
+    :func:`~assay.report.redact.redact` has to name each of them: a nested model would be
+    copied across in one line, and the ids inside it would leave the machine unhashed while
+    still satisfying the compile-time check that makes redaction total (ADR-0070).
     """
 
     suite_hash: SuiteHash
@@ -567,6 +575,14 @@ class Report(SchemaModel):
     costs: tuple[ToolCost, ...]
     prices_source: PriceSource | None
     tasks: tuple[TaskLine, ...]
+    # How many tasks the suite held, and how many of them this run has trials for. Both are
+    # recorded rather than derived from ``tasks``, which is a trial log: it holds one line per
+    # result, so counting it would multiply the coverage by the trial depth.
+    suite_tasks: int = Field(ge=0)
+    measured_tasks: int = Field(ge=0)
+    # str, not TaskId, for TaskLine.task_id's reason (see the comment above it): after
+    # redaction this tuple holds tokens, which the mined-task shape rejects.
+    unprovisioned_tasks: tuple[str, ...]
 
 
 # A report that has been through the redaction boundary. Declared here, beside the schema it
@@ -605,6 +621,12 @@ def build_report(
     its own to fall back on, and a default rate would be a number this project invented
     (ADR-0046).
 
+    The coverage comes off ``rs`` and takes no argument of its own: the denominator travels in
+    the result set (ADR-0067), and one a caller had to supply is one some caller supplies
+    wrongly or not at all. ``measured_tasks`` counts distinct task ids rather than results,
+    because ``tasks`` below is a trial log; the unprovisioned ids are sorted, since a mapping's
+    insertion order is not something a reader of the rendered line can see (ADR-0070).
+
     Pure: no I/O, no git, no network, no clock.
     """
     outcomes_by_tool = _group_by_tool(rs)
@@ -633,6 +655,9 @@ def build_report(
         costs=_tool_costs(rs, outcomes_by_tool, prices),
         prices_source=None if prices is None else prices.source,
         tasks=tasks,
+        suite_tasks=rs.suite_task_count,
+        measured_tasks=len({result.task_id for result in rs.results}),
+        unprovisioned_tasks=tuple(sorted(rs.unprovisioned)),
     )
 
 

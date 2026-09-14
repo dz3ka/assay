@@ -34,7 +34,7 @@ from pydantic import ValidationError
 # tries to collect any module-level name starting with "Test", and warns about these three on
 # every run if they are bound as they are spelled.
 from assay.adapters import GroundTruthAdapter
-from assay.mine import CommitRef, split_changes
+from assay.mine import CommitRef, Unprovisioned, split_changes
 from assay.mine import TestReport as Report
 from assay.mine import TestRunner as Runner
 from assay.mine import TestStatus as Status
@@ -48,6 +48,10 @@ _GUARD = "tests/test_widget.py::test_guard"
 _TEST_PATCH = "--- a/tests/test_widget.py\n+++ b/tests/test_widget.py\n"
 _ATTEMPT_DIFF = "--- a/widget.py\n+++ b/widget.py\n"
 _TIMEOUT_S = 300
+
+# What a runner factory says when it cannot equip a workspace. Only its type is read here:
+# the trial scores the workspace FAILED, and the words are the miner's and the CLI's to print.
+_NO_ENVIRONMENT = "no environment could be built for this workspace"
 
 # The task's own test file, rewritten by the tool instead of satisfied: the diff ADR-0037
 # exists to refuse, and the one shape that would otherwise mint a confident false PASSED.
@@ -257,11 +261,11 @@ class _RecordingFactory:
     list staying empty, which is what the ERRORED and diff-did-not-apply tests assert.
     """
 
-    def __init__(self, runner: Runner | None) -> None:
+    def __init__(self, runner: Runner | Unprovisioned) -> None:
         self._runner = runner
         self.workspaces: list[Path] = []
 
-    def __call__(self, workspace: Path) -> Runner | None:
+    def __call__(self, workspace: Path) -> Runner | Unprovisioned:
         self.workspaces.append(workspace)
         return self._runner
 
@@ -395,7 +399,7 @@ def test_a_workspace_with_no_runner_scores_failed(tmp_path: Path) -> None:
         adapter=_ScriptedAdapter(_attempt(diff=_ATTEMPT_DIFF)),
         budget=_budget(),
         history=_TrialHistory(tmp_path),
-        runner_for=_RecordingFactory(None),
+        runner_for=_RecordingFactory(Unprovisioned(_NO_ENVIRONMENT)),
         timeout_s=_TIMEOUT_S,
         trial_index=_TRIAL_INDEX,
     )

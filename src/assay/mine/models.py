@@ -219,10 +219,16 @@ class MiningYield(SchemaModel):
     # any rate a reader wants is computed at the renderer, from these.
     rejected: Mapping[GateRejection, int]
     # Commits the walk yielded whose workspace could not be given an environment its tests
-    # could run in (:data:`assay.mine.protocols.RunnerFactory` returned ``None``). They are
-    # examined - the walk did yield them - and they are not candidates, because the gate never
-    # spoke about them. Counted here, outside the eight reasons, for the reason ADR-0015 gives
-    # for merges: name the population, do not widen the reason set.
+    # could run in (:data:`assay.mine.protocols.RunnerFactory` returned
+    # :class:`~assay.mine.protocols.Unprovisioned`). They are examined - the walk did yield them -
+    # and they are not candidates, because the gate never spoke about them. Named here, outside
+    # the eight reasons, for the reason ADR-0015 gives for merges: name the population, do not
+    # widen the reason set.
+    #
+    # Full sha -> the failure's own words, not a count (ADR-0073): the shape
+    # ``ResultSet.unprovisioned`` already has, so the mine and the run name what they could not
+    # measure the same way (ADR-0067). The partition counts ``len`` of it, so the arithmetic is
+    # the count's arithmetic. Never serialised into a suite, so no content address moves.
     #
     # Rejected alternative: a ``GateRejection.ENVIRONMENT_FAILED`` member. A rejection reason
     # has to have a walked fixture witness (``tests/mine/test_fixture_repo.py`` asserts every
@@ -230,10 +236,9 @@ class MiningYield(SchemaModel):
     # witness for a real ``uv pip install`` failure - the only true witness would put a
     # network-dependent install into CI.
     #
-    # Defaulted to zero so the fixture oracle, which constructs a yield without this field,
-    # still describes the same partition - and so that a yield serialised before the field
-    # existed would too, once anything in the pipeline parses one back.
-    unprovisioned: int = Field(default=0, ge=0)
+    # Defaulted to empty so the fixture oracle, which constructs a yield without this field,
+    # still describes the same partition.
+    unprovisioned: Mapping[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_partition(self) -> Self:
@@ -264,10 +269,11 @@ class MiningYield(SchemaModel):
             raise ValueError(f"rejected holds a negative count for {negative}")
 
         discarded = sum(self.rejected.values())
-        if self.accepted + discarded + self.unprovisioned != self.commits_examined:
+        unprovisioned = len(self.unprovisioned)
+        if self.accepted + discarded + unprovisioned != self.commits_examined:
             raise ValueError(
                 f"accepted ({self.accepted}) + rejected ({discarded}) + unprovisioned "
-                f"({self.unprovisioned}) does not partition commits examined "
+                f"({unprovisioned}) does not partition commits examined "
                 f"({self.commits_examined})"
             )
         judged = sum(self.rejected[reason] for reason in GATE_VERDICTS)

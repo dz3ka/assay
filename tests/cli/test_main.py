@@ -32,40 +32,51 @@ itself.
 """
 
 import argparse
+import importlib
 import io
 import json
 import re
 import sys
-from collections.abc import Mapping, Sequence
-from contextlib import redirect_stderr, redirect_stdout
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from assay.adapters import ProcessOutput
+from assay.adapters import LOCAL_NAME, NAIVE_NAME, Adapter, NullAdapter, ProcessOutput
 from assay.cli import main
 from assay.cli.main import (
+    DEFAULT_LOCAL_MODEL,
     DEFAULT_MODEL,
     DEFAULT_TRIAL_TIMEOUT_S,
     DEFAULT_TRIALS,
     EXIT_FAILED,
+    EXIT_OK,
     EXIT_USAGE,
     GENERATOR,
     HOST_EXECUTION_NOTICE,
     HOST_EXECUTION_SENTENCE,
     TOOL_API_KEY_ENV,
     TOOL_KILLED_EXIT_CODE,
+    _adapters_needing_no_image,
+    _task_image,
     adapter_phase_process,
     build_parser,
+    host_runner_for,
     host_tool_process,
 )
-from assay.host import minimal_env
+from assay.core import AssayError
+from assay.host import EnvironmentSetupError, GitHistory, minimal_env
+from assay.mine import RunnerFactory, Unprovisioned
 from assay.report import Report
+from assay.results import Attempt, Budget, Outcome, Result, read_result_set
 from assay.sandbox import AGENT_EXECUTABLE
-from assay.suite import load_suite
-from tests.fixture_repo import EXPECTED_YIELD, build_fixture_repo
+from assay.score import TrialSetupError, run_trial
+from assay.suite import SuiteBody, Task, load_suite, save_suite
+from tests.fixture_repo import EXPECTED_YIELD, FIXTURE_COMMITS, build_fixture_repo
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 RESULTS = FIXTURES / "results_overlapping.json"
@@ -369,7 +380,7 @@ def test_the_yield_line_names_the_denominator_and_every_discard(mined: MinedFixt
         f"{EXPECTED_YIELD.commits_examined} single-parent commits examined -> "
         f"{EXPECTED_YIELD.accepted} valid tasks" in document
     )
-    assert f"{EXPECTED_YIELD.unprovisioned} unprovisioned" in document
+    assert f"{len(EXPECTED_YIELD.unprovisioned)} unprovisioned" in document
     for reason, count in EXPECTED_YIELD.rejected.items():
         assert f"{reason.value} {count}" in document
 
@@ -434,6 +445,50 @@ def test_mining_a_repository_that_is_not_there_fails_with_a_message(tmp_path: Pa
     assert failed.out == ""
     assert "Traceback" not in failed.err
     assert not (tmp_path / "suite.json").exists()
+
+
+# The sentence a refused install is stood in by below. One line, so a stderr line that carries
+# it can be matched whole; a real `CommandFailedError` appends an excerpt on further lines.
+_SETUP_REFUSAL = "uv pip install failed: no pyproject.toml or setup.py at this commit"
+
+
+def _refuse_every_install(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every workspace unprovisionable, the way a pre-packaging history is."""
+
+    def refuse(workspace: Path, *, timeout_s: int) -> Path:
+        raise EnvironmentSetupError(_SETUP_REFUSAL)
+
+    monkeypatch.setattr(CLI_MODULE, "provision_venv", refuse)
+
+
+def test_host_runner_for_carries_the_setup_error_sentence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The seam catches the failure so the walk goes on, and it is the only place the failure's
+    # own words exist: dropping them here would leave the yield a count nobody can act on.
+    _refuse_every_install(monkeypatch)
+
+    assert host_runner_for(tmp_path) == Unprovisioned(_SETUP_REFUSAL)
+
+
+def test_mine_prints_why_each_unprovisioned_commit_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # One stderr line per unprovisioned commit, in the run side's shape (`assay run: <task>
+    # unmeasured: <reason>`), so a gap in the yield names its commits and says why. The yield
+    # document on stdout is unchanged: it still counts them.
+    _refuse_every_install(monkeypatch)
+    built = build_fixture_repo(tmp_path / "build")
+
+    walked = drive(["mine", "--repo", str(built), "--out", str(tmp_path / "suite.json")])
+
+    assert walked.code == 0
+    named = re.findall(r"^assay mine: ([0-9a-f]{12}) unprovisioned: (.*)$", walked.err, re.M)
+    assert len(named) == 7
+    assert {reason for _, reason in named} == {_SETUP_REFUSAL}
+    assert {sha for sha, _ in named} <= {commit.sha[:12] for commit in FIXTURE_COMMITS}
+    assert "0 candidates reached the gate, 7 unprovisioned;" in walked.out
+    assert _SETUP_REFUSAL not in walked.out
 
 
 def test_validating_a_suite_that_cannot_be_read_fails(tmp_path: Path) -> None:
@@ -688,6 +743,65 @@ def test_the_two_oracles_are_not_asked_for_a_baseline_they_would_only_bracket(
     assert _NO_SUITE in err
 
 
+def test_the_local_baseline_runs_beside_the_oracles_without_a_paid_baseline(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    # The exemption ADR-0060 grants: `naive-local` spends nothing, so demanding the metered
+    # baseline beside it would demand money of the one run that was arranged to cost none. The
+    # run gets past the refusal and fails on the suite it was pointed at, like the pair above.
+    code, _out, err = invoke(capsys, run_argv(tmp_path, "ground-truth", "null", LOCAL_NAME))
+
+    assert code == 1
+    assert _NO_SUITE in err
+
+
+def test_the_local_baseline_does_not_discharge_the_rule_for_a_tool(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    # The other half of ADR-0060, and the half that is a measurement rule rather than a
+    # convenience: a frontier agent compared against a 7B model on this machine, with that model
+    # called the baseline, is the flattering comparison CLAUDE.md's rule exists to prevent. The
+    # refusal must still demand `naive` by name and must still arrive before the suite is read.
+    code, out, err = invoke(capsys, run_argv(tmp_path, "agentic", LOCAL_NAME))
+
+    assert code == 1
+    assert out == ""
+    assert len(err.strip().splitlines()) == 1
+    assert f"--adapter {NAIVE_NAME};" in err
+    assert _NO_SUITE not in err
+
+
+@pytest.mark.parametrize("name", [NAIVE_NAME, LOCAL_NAME], ids=["paid", "local"])
+def test_naming_one_baseline_twice_is_refused(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, name: str
+) -> None:
+    # One adapter named twice would land in the result set as duplicate trials of one task,
+    # which pass^n counts as two tasks. The rule predates the local baseline and has to hold for
+    # it too, since the two names are one class and a typo could name either of them twice.
+    code, out, err = invoke(capsys, run_argv(tmp_path, name, name))
+
+    assert code == 1
+    assert out == ""
+    assert "more than once" in err
+    assert _NO_SUITE not in err
+
+
+def test_the_local_baseline_is_built_under_its_own_name_and_needs_no_key(
+    tmp_path: Path,
+) -> None:
+    # Two claims in one construction, because they are the same claim seen twice: the adapter is
+    # reported under `naive-local` rather than under `naive`, so a report cannot show a metered
+    # call and a free one on one row; and it is built with no API key at all, so the run that
+    # names it never touches `ASSAY_MODEL_API_KEY`. `LocalModelTransport` has no keyword to pass
+    # one, so an empty key here is not a stand-in for a missing one - it is the whole signature.
+    made = _adapters_needing_no_image([LOCAL_NAME], model=DEFAULT_MODEL, api_key="")
+
+    assert [adapter.name for adapter in made] == [LOCAL_NAME]
+    # The model *is* the tool, so the version has to name the local one rather than the flag's
+    # default, which this call deliberately passes to prove the two are not confused.
+    assert made[0].version.endswith(f"+{DEFAULT_LOCAL_MODEL}")
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -779,6 +893,422 @@ def test_the_model_key_reaches_the_container_by_name_and_never_through_an_argv(
     assert TOOL_API_KEY_ENV in started.argv
     assert _KEY not in started.argv
     assert started.env[TOOL_API_KEY_ENV] == _KEY
+
+
+# --- `assay run`'s two checkouts: the image's context, and the workspace a trial is given ----
+
+# One run holds one `GitHistory` and asks it for two different kinds of checkout (ADR-0062).
+# The tests below pin which half asks for which, against the same fixture repository and the
+# same history object, because the failure they exist to catch is the two being collapsed
+# into one. The build half would at least fail loudly if it were - `build_task_image` refuses
+# a linked worktree - but only once a build is attempted, and the workspace half would not.
+
+# A test patch that only adds a file, so nothing in the tree it is applied to has to match for
+# it to apply. What is under test here is which checkout each half of a run is handed, so the
+# task below carries the smallest patch `run_trial`'s preparation will accept rather than one
+# mined out of the fixture history.
+_ADDED_TEST = (
+    "--- /dev/null\n"
+    "+++ b/tests/test_pinned.py\n"
+    "@@ -0,0 +1,2 @@\n"
+    "+def test_pinned() -> None:\n"
+    "+    assert True\n"
+)
+
+# The fixture's merge commit, named as `tests/sandbox/support.py` names it: commits appended to
+# the fixture later must not silently change which tree these two check out.
+_HEAD_LABEL = "merge_tidy"
+
+# `assay.cli` re-exports the entry point under its own submodule's name, so the attribute
+# `assay.cli.main` is the function. The module `_task_image` reads `build_task_image` from is
+# reachable only by name, and that is the namespace a stand-in has to be written into.
+CLI_MODULE = importlib.import_module("assay.cli.main")
+
+# The tag the patched builder answers with. Plainly not a content address, so a test that read
+# it as one would be reading a string this module made up.
+_RECORDED_TAG = "assay-task:recorded-by-a-test"
+
+
+class RecordingHistory(GitHistory):
+    """A real :class:`~assay.host.GitHistory` that writes down which checkout it was asked for.
+
+    A subclass rather than a fake: both checkouts are real git, and the question is which of
+    the two a caller asks this one history for - not what git does with the request, which
+    ``tests/host/test_git.py`` already covers.
+    """
+
+    def __init__(self, repo: Path, *, worktree_root: Path) -> None:
+        super().__init__(repo, worktree_root=worktree_root)
+        self.asked: list[str] = []
+
+    @contextmanager
+    def worktree(self, commit: str) -> Iterator[Path]:
+        self.asked.append("worktree")
+        with super().worktree(commit) as path:
+            yield path
+
+    @contextmanager
+    def standalone_checkout(self, commit: str) -> Iterator[Path]:
+        self.asked.append("standalone_checkout")
+        with super().standalone_checkout(commit) as path:
+            yield path
+
+
+def checkout_seam(root: Path) -> tuple[RecordingHistory, str]:
+    """The fixture repository under ``root``, a recording history over it, and the commit."""
+    repo = build_fixture_repo(root / "repo")
+    commit = next(entry.sha for entry in FIXTURE_COMMITS if entry.label == _HEAD_LABEL)
+    return RecordingHistory(repo, worktree_root=root / "worktrees"), commit
+
+
+def pinned_task(commit: str, *, task_id: str | None = None) -> Task:
+    """A task at ``commit`` carrying the add-a-file patch, and nothing else worth reading.
+
+    ``task_id`` defaults to one derived from the commit, which is what a single-task test wants.
+    A suite of several tasks names them itself: a body is sorted by task id, so the order a test
+    reads its tasks in has to be one the test chose rather than one the object names fell into.
+    """
+    return Task(
+        schema_version=1,
+        task_id=task_id if task_id is not None else f"fixture-{commit[:12]}",
+        repo_url="https://example.invalid/fixture.git",
+        base_commit=commit,
+        test_files=("tests/test_pinned.py",),
+        test_patch=_ADDED_TEST,
+        ground_truth_patch="",
+        fail_to_pass=("tests/test_pinned.py::test_pinned",),
+        pass_to_pass=(),
+        prompt="make the target pass",
+        metadata={},
+    )
+
+
+def test_the_image_a_task_is_built_from_comes_from_a_standalone_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ADR-0062: a linked worktree's `.git` is a pointer file at a clone the build cannot reach,
+    # so a build backend that derives the project's version from git has nothing to read there.
+    # The context is a clone of its own now, with a real `.git` directory the build copies.
+    # The daemon is not involved - which context was handed over is the whole question.
+    history, commit = checkout_seam(tmp_path)
+    handed: list[tuple[Path, bool]] = []
+
+    def record(
+        *, context: Path, base_commit: str, exclude_newer: str | None, timeout_s: int
+    ) -> str:
+        # Asked while the context manager is still open: both checkouts are destroyed on the
+        # way out, so the shape of `.git` is only a fact for as long as the build has it.
+        handed.append((context, (context / ".git").is_dir()))
+        return _RECORDED_TAG
+
+    monkeypatch.setattr(CLI_MODULE, "build_task_image", record)
+
+    tag = _task_image(history, pinned_task(commit))
+
+    assert tag == _RECORDED_TAG
+    assert history.asked == ["standalone_checkout"]
+    context, git_is_a_directory = handed[0]
+    assert git_is_a_directory, f"{context} holds no real .git directory"
+
+
+def test_the_workspace_a_trial_is_given_is_still_a_linked_worktree(tmp_path: Path) -> None:
+    # The load-bearing half of ADR-0062: a standalone clone carries every ref, including the
+    # commits a task's fix lives in, and the workspace *is* bind-mounted into the tool's own
+    # container. Making it standalone too would hand every tool under test a machine-readable
+    # answer key. `run_trial` is typed against `History`, which declares no standalone
+    # checkout at all, so a collapse would have to get past `mypy --strict` first; this says
+    # the same thing about the run the CLI actually drives.
+    history, commit = checkout_seam(tmp_path)
+
+    result = run_trial(
+        task=pinned_task(commit),
+        adapter=NullAdapter(),
+        budget=Budget(
+            max_wall_clock_s=60,
+            max_input_tokens=None,
+            max_output_tokens=None,
+            max_tool_calls=None,
+            max_usd=None,
+        ),
+        history=history,
+        # No runner, so no container: a trial with nothing measurable still prepares both of
+        # its workspaces, which is what this test reads.
+        runner_for=lambda _workspace: Unprovisioned("no runner: this test reads workspaces"),
+        timeout_s=60,
+        trial_index=0,
+    )
+
+    # FAILED because nothing was measured, not because anything went wrong - the null adapter
+    # writes no diff and there was no runner to score one (that pairing is `tests/score`'s
+    # subject; here it is the cheapest complete trial).
+    assert result.outcome is Outcome.FAILED
+    # Two preparations, both worktrees, and no standalone checkout anywhere in a trial.
+    assert history.asked == ["worktree", "worktree"]
+
+
+# --- `assay run` survives a task it could not provision --------------------------------------
+
+# A whole run is driven here with the daemon stubbed out at exactly two seams and nothing else:
+# `build_task_image`, which is where a task that cannot be given an image fails, and `run_trial`,
+# which is where a test patch that refuses at its base commit fails. Both mark the task
+# `unprovisioned` (ADR-0068). Everything between the two - the suite read, the loop's order, the
+# write after every task, the exit code - is the code under test rather than a stand-in, and the
+# result set is read back off disk, because the file is the artefact a report is built from.
+
+# Three tasks, sorted as a suite body requires, at three of the fixture repository's commits. One
+# commit each rather than one shared: the build seam is asked for a commit, so a task the build
+# refuses can only be named by the commit it was asked about.
+_RUN_TASK_IDS = ("task-a", "task-b", "task-c")
+_RUN_TASK_LABELS = ("seed", "documented_total", "merge_tidy")
+
+# Two, not one: a task that fails on its *second* trial is what separates "buffered and
+# discarded" from "never started", and a single-trial run cannot tell the two apart.
+_RUN_TRIALS = 2
+
+# The sentence the build stand-in fails with, matched in the file rather than paraphrased there.
+_NO_IMAGE = "no image for this commit"
+
+
+@dataclass(frozen=True)
+class RunSeam:
+    """One prepared `assay run` invocation: its command line, its output path, its commits."""
+
+    argv: list[str]
+    out: Path
+    commits: dict[str, str]
+
+
+def three_task_run(root: Path) -> RunSeam:
+    """A run of three tasks against the fixture repository, written out under ``root``."""
+    repo = build_fixture_repo(root / "repo")
+    by_label = {entry.label: entry.sha for entry in FIXTURE_COMMITS}
+    commits = dict(zip(_RUN_TASK_IDS, (by_label[label] for label in _RUN_TASK_LABELS), strict=True))
+    body = SuiteBody(
+        schema_version=1,
+        suite_name="three-tasks-one-of-which-may-fail",
+        tasks=tuple(pinned_task(sha, task_id=task_id) for task_id, sha in commits.items()),
+    )
+    suite_path = root / "suite.json"
+    save_suite(suite_path, body, generator=GENERATOR)
+    out = root / "results.json"
+    return RunSeam(
+        argv=[
+            "run",
+            "--suite",
+            str(suite_path),
+            "--repo",
+            str(repo),
+            "--out",
+            str(out),
+            "--adapter",
+            "null",
+            "--trials",
+            str(_RUN_TRIALS),
+            "--trial-timeout-s",
+            RUN_TIMEOUT_S,
+        ],
+        out=out,
+        commits=commits,
+    )
+
+
+class StubImages:
+    """Stands in for `build_task_image`: a tag per commit, or a failure for the named ones.
+
+    It also reads the result set back at every call, which is how the write *cadence* is
+    asserted: a build is the first thing a task does, so what is on disk when one starts is
+    everything the run had committed to before that task began.
+    """
+
+    def __init__(self, *, unbuildable: Sequence[str] = (), watching: Path | None = None) -> None:
+        self.unbuildable = set(unbuildable)
+        self.watching = watching
+        self.on_disk: list[tuple[int, int]] = []
+
+    def __call__(
+        self, *, context: Path, base_commit: str, exclude_newer: str | None, timeout_s: int
+    ) -> str:
+        if self.watching is not None:
+            before = read_result_set(self.watching)
+            self.on_disk.append((len(before.results), len(before.unprovisioned)))
+        if base_commit in self.unbuildable:
+            raise AssayError(f"{_NO_IMAGE}: {base_commit[:12]}")
+        return f"assay-task:{base_commit[:12]}"
+
+
+class StubTrials:
+    """Stands in for `run_trial`: scores every trial, except the ones named to refuse.
+
+    ``refusing`` maps a task id to the trial index whose preparation raises, so a task can be
+    made to fail on its second trial - after the first has already been scored and buffered.
+    """
+
+    def __init__(self, *, refusing: Mapping[str, int] | None = None) -> None:
+        self.refusing = dict(refusing or {})
+        self.scored: list[tuple[str, int]] = []
+
+    def __call__(
+        self,
+        *,
+        task: Task,
+        adapter: Adapter,
+        budget: Budget,
+        history: GitHistory,
+        runner_for: RunnerFactory,
+        timeout_s: int,
+        trial_index: int,
+    ) -> Result:
+        if self.refusing.get(task.task_id) == trial_index:
+            raise TrialSetupError(f"test patch refused at {task.base_commit[:12]}")
+        self.scored.append((task.task_id, trial_index))
+        attempt = Attempt(
+            schema_version=1,
+            adapter_name=adapter.name,
+            adapter_version=adapter.version,
+            task_id=task.task_id,
+            trial_index=trial_index,
+            diff="",
+            input_tokens=0,
+            output_tokens=0,
+            wall_clock_ms=1,
+            tool_calls=0,
+            retries=0,
+            cost_usd=Decimal("0.000000"),
+            error=None,
+        )
+        return Result(
+            schema_version=1,
+            task_id=task.task_id,
+            adapter_name=adapter.name,
+            trial_index=trial_index,
+            attempt=attempt,
+            outcome=Outcome.PASSED,
+        )
+
+
+def stubbed_run(monkeypatch: pytest.MonkeyPatch, *, images: StubImages, trials: StubTrials) -> None:
+    """Put both stand-ins into the namespace `run_run` reaches them by name through."""
+    monkeypatch.setattr(CLI_MODULE, "build_task_image", images)
+    monkeypatch.setattr(CLI_MODULE, "run_trial", trials)
+
+
+def test_a_task_whose_image_will_not_build_is_named_in_the_file_rather_than_ending_the_run(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The 2026-09-10 live run's failure, in miniature: one task of the suite could not be given
+    # an image, and the whole run ended on it - 105 scored trials thrown away with it. The
+    # remaining tasks are measured now and the one that was not is named in the file with the
+    # sentence that failed it (ADR-0068), which is what makes the short file readable as
+    # "two of three" rather than as a complete run of two.
+    seam = three_task_run(tmp_path)
+    stubbed_run(
+        monkeypatch,
+        images=StubImages(unbuildable=[seam.commits["task-b"]]),
+        trials=StubTrials(),
+    )
+
+    code, _out, err = invoke(capsys, seam.argv)
+
+    assert code == EXIT_OK
+    recorded = read_result_set(seam.out)
+    assert {result.task_id for result in recorded.results} == {"task-a", "task-c"}
+    assert recorded.suite_task_count == 3
+    assert set(recorded.unprovisioned) == {"task-b"}
+    assert _NO_IMAGE in recorded.unprovisioned["task-b"]
+    # The shortfall reaches the operator as well as the file, and names the task rather than
+    # counting it (user ruling 1: publish what was measured, name what was not).
+    assert "1 of 3 tasks unmeasured: task-b" in err
+
+
+def test_a_task_whose_patch_refuses_at_its_base_commit_is_unprovisioned_too(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # One state for both causes, not two. `TrialSetupError` means the workspace could not be
+    # brought to the state the trial is defined on (`score/trial.py:62`), which is the same
+    # failure as an image that would not build, one layer later - and neither is the tool under
+    # test failing, so neither may reach its pass rate.
+    seam = three_task_run(tmp_path)
+    stubbed_run(
+        monkeypatch,
+        images=StubImages(),
+        trials=StubTrials(refusing={"task-c": 0}),
+    )
+
+    code, _out, err = invoke(capsys, seam.argv)
+
+    assert code == EXIT_OK
+    recorded = read_result_set(seam.out)
+    assert {result.task_id for result in recorded.results} == {"task-a", "task-b"}
+    assert set(recorded.unprovisioned) == {"task-c"}
+    assert "test patch refused" in recorded.unprovisioned["task-c"]
+    assert "1 of 3 tasks unmeasured: task-c" in err
+
+
+def test_a_task_that_fails_partway_contributes_no_trials_at_all(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # All or nothing, deliberately. The first trial of `task-b` is scored and buffered and the
+    # second refuses, so the task has one result of two in hand - and it is discarded, because
+    # `pass^n` over one trial of a task that was run twice is a rate whose exponent nobody ran
+    # (`report/model.py` computes it straight off the trials present).
+    seam = three_task_run(tmp_path)
+    trials = StubTrials(refusing={"task-b": 1})
+    stubbed_run(monkeypatch, images=StubImages(), trials=trials)
+
+    code, _out, _err = invoke(capsys, seam.argv)
+
+    assert code == EXIT_OK
+    # The trial really was run and really did produce a result, so the discard is the loop's
+    # doing rather than an absence of anything to discard.
+    assert ("task-b", 0) in trials.scored
+    recorded = read_result_set(seam.out)
+    assert {result.task_id for result in recorded.results} == {"task-a", "task-c"}
+    assert set(recorded.unprovisioned) == {"task-b"}
+
+
+def test_the_result_set_is_on_disk_before_the_first_task_and_after_every_one(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ADR-0069's whole subject. The file exists before task one - empty, and already carrying
+    # the suite's denominator - and it is rewritten in full at the end of every task, so an
+    # interrupted run leaves the trials it finished rather than nothing at all.
+    seam = three_task_run(tmp_path)
+    images = StubImages(watching=seam.out)
+    stubbed_run(monkeypatch, images=images, trials=StubTrials())
+
+    code, _out, _err = invoke(capsys, seam.argv)
+
+    assert code == EXIT_OK
+    # Read at the start of each of the three tasks: nothing, then one task's two trials, then
+    # two tasks' four. A run that wrote once at the end could not answer the first read at all.
+    assert images.on_disk == [(0, 0), (2, 0), (4, 0)]
+    recorded = read_result_set(seam.out)
+    assert len(recorded.results) == 3 * _RUN_TRIALS
+    assert recorded.unprovisioned == {}
+
+
+def test_a_run_that_could_measure_nothing_at_all_still_fails(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The other half of the exit rule. Surviving one unprovisioned task must not turn a run that
+    # measured *nothing* into a success: exit zero there would report an empty result set as a
+    # completed run, which is the confident number nobody should trust. The file is still
+    # written, and it still names all three, because that is the record of what went wrong.
+    seam = three_task_run(tmp_path)
+    stubbed_run(
+        monkeypatch,
+        images=StubImages(unbuildable=list(seam.commits.values())),
+        trials=StubTrials(),
+    )
+
+    code, _out, err = invoke(capsys, seam.argv)
+
+    assert code == EXIT_FAILED
+    recorded = read_result_set(seam.out)
+    assert recorded.results == ()
+    assert set(recorded.unprovisioned) == set(_RUN_TASK_IDS)
+    assert recorded.suite_task_count == 3
+    assert "3 of 3 tasks unmeasured: task-a, task-b, task-c" in err
 
 
 # Prices reach a report only through the command line, and the ones below are plainly nobody's:

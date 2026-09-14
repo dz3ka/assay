@@ -31,7 +31,7 @@ from assay.adapters import Adapter
 from assay.core import AssayError
 from assay.mine.candidates import is_test_path
 from assay.mine.models import TestReport
-from assay.mine.protocols import History, RunnerFactory
+from assay.mine.protocols import History, RunnerFactory, Unprovisioned
 from assay.results import Attempt, Budget, Outcome, Result
 from assay.score.executable import score_report
 from assay.suite import Task
@@ -182,7 +182,7 @@ def _measure(
     if diff and not history.apply_patch(workspace, diff):
         return None
     runner = runner_for(workspace)
-    if runner is None:
+    if isinstance(runner, Unprovisioned):
         return None
     selectors = (*task.fail_to_pass, *task.pass_to_pass)
     return runner.run(workspace, selectors, timeout_s=timeout_s)

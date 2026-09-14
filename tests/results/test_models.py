@@ -403,6 +403,92 @@ def test_a_result_and_its_attempt_take_the_same_task_id_constraint() -> None:
         _result(task_id="Forged\nTask")
 
 
+def test_the_fixture_result_sets_denominator_is_the_fixture_suites_task_count() -> None:
+    # The denominator is stored rather than derived (ADR-0067), which only helps if what is
+    # stored is the truth: the fixture cites suite_minimal's digest, so it owes that suite's
+    # task count and not the count of tasks that happen to have trials here.
+    suite: dict[str, JsonValue] = json.loads(
+        (FIXTURES / "suite_minimal.json").read_text(encoding="utf-8")
+    )
+    body = suite["body"]
+    assert isinstance(body, dict)
+    tasks = body["tasks"]
+    assert isinstance(tasks, list)
+
+    assert _result_set().suite_task_count == len(tasks)
+
+
+def test_a_result_set_document_may_not_omit_the_denominator() -> None:
+    # Required, not defaulted: a file that does not say how many tasks the run was meant to
+    # cover would default to a lie, and a twelve-of-thirteen run would read as a whole one.
+    incomplete = _minimal_result_set_payload()
+    del incomplete["suite_task_count"]
+
+    with pytest.raises(ValidationError, match="suite_task_count"):
+        ResultSet.model_validate(incomplete)
+
+
+def test_a_result_set_written_before_unprovisioned_existed_still_loads() -> None:
+    # The one defaulted field in this module. An M0-M5 document names no unmeasured task
+    # because the run loop that records them did not exist; it still states the same
+    # coverage, so it loads rather than failing a build that only reads it.
+    older = _minimal_result_set_payload()
+    del older["unprovisioned"]
+
+    result_set = ResultSet.model_validate(older)
+
+    assert result_set.unprovisioned == {}
+    assert result_set.suite_task_count == 1
+
+
+def test_a_task_cannot_be_both_measured_and_unprovisioned() -> None:
+    # The two sides are a claim about one task each: trials exist for it, or they do not.
+    # A document asserting both would be counted twice by anything summing the coverage.
+    with pytest.raises(ValidationError, match="both measured and unprovisioned"):
+        _result_set(unprovisioned={"fixture-repo.0001": "image build failed"})
+
+
+def test_a_result_set_covering_more_tasks_than_the_suite_holds_is_rejected() -> None:
+    # Over-count is the shape that would publish a pass^n over a denominator nobody ran:
+    # one measured task plus one unmeasured one cannot fit a suite of one.
+    with pytest.raises(ValidationError, match="exceeds the suite's 1 tasks"):
+        _result_set(unprovisioned={"fixture-repo.0002": "image build failed"})
+
+
+def test_a_result_set_written_part_way_through_a_run_is_accepted() -> None:
+    # Deliberately weaker than MiningYield._check_partition's exact equality
+    # (mine/models.py:273): the run rewrites this file after every task, so a file covering
+    # one task of a three-task suite is a run in progress, not a document that lies.
+    partial = _minimal_result_set_payload() | {"suite_task_count": 3}
+
+    result_set = ResultSet.model_validate(partial)
+
+    assert result_set.suite_task_count == 3
+    assert {result.task_id for result in result_set.results} == {"fixture-repo.0001"}
+
+
+def test_an_empty_result_set_may_still_name_a_task_it_could_not_measure() -> None:
+    # The first write of a run that failed on task one: no trials, one named task, and a
+    # denominator saying how many more there were.
+    started = _minimal_result_set_payload() | {
+        "results": [],
+        "suite_task_count": 2,
+        "unprovisioned": {"fixture-repo.0002": "no module named 'distutils'"},
+    }
+
+    result_set = ResultSet.model_validate(started)
+
+    assert result_set.results == ()
+    assert result_set.unprovisioned == {"fixture-repo.0002": "no module named 'distutils'"}
+
+
+def test_an_unmeasured_task_id_takes_the_mined_task_shape() -> None:
+    # Keys of this mapping are printed in the report beside trial rows, so an unpinned one
+    # forges a row exactly the way an unpinned result task_id would (see above).
+    with pytest.raises(ValidationError, match="unprovisioned"):
+        _result_set(suite_task_count=2, unprovisioned={"Forged\nTask": "nope"})
+
+
 def test_the_results_task_id_pattern_is_the_suite_schemas_pattern() -> None:
     # The pattern is spelled in both modules so that neither package depends on the other
     # for its own guarantees (see the comment above it). That duplication is only safe while
